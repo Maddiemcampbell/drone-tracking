@@ -154,6 +154,7 @@ class ConstantVelocityKalmanTracker:
             estimated_velocity=self.state[2:].tolist(),
             state_covariance=self.covariance.tolist(),
             last_measurement_timestamp=self.last_measurement_timestamp,
+            measurement_age_seconds=(self.timestamp - self.last_measurement_timestamp if self.last_measurement_timestamp is not None else None),
             measurement_updated=self.measurement_updated,
         )
 
