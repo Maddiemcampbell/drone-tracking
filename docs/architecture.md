@@ -9,7 +9,7 @@ truth + observations -> API SimulationResult -> Canvas playback
 observations -> ConstantVelocityKalmanFilter -> estimates
 ```
 
-The tracker consumes `SensorObservation` only. It must never receive truth, true initial velocity, or motion-event configuration. Truth is retained solely for visualization and evaluation. The current tracker milestone is prediction-only: its backend outputs initialize from the first Cartesian observation and then propagate to later observation timestamps, but the frontend does not present these partial outputs as a finished track.
+The tracker consumes `SensorObservation` only. It must never receive truth, true initial velocity, or motion-event configuration. Truth is retained solely for visualization and evaluation. The tracker initializes from the first Cartesian observation, merges measurement and output events chronologically, predicts to each event time, and applies causal Cartesian measurement updates. The frontend does not present the backend estimates as a finished tracking UI yet.
 
 `config.py` owns validation; `world.py` creates initial truth; `motion.py` propagates straight and analytic constant-turn-rate segments; `scenarios.py` provides editable examples; `sensors.py` creates noisy measurements; `runner.py` orchestrates; schemas define the typed contract; API routes validate and run batches. The frontend owns playback and converts meters to Canvas pixels. The sensor dispatcher selects the Cartesian position model or the simplified range/bearing model without adding a second scheduler.
 
@@ -26,4 +26,4 @@ Q(dt) = q * [[dt³/3, 0,      dt²/2, 0],
              [0,     dt²/2,  0,     dt]]
 ```
 
-There is intentionally no measurement update yet. Early velocity estimates therefore need several observations to settle in a future update-capable milestone.
+Measurement updates use `z = [measured_x, measured_y]`, `H` selecting x/y, each observation’s Cartesian covariance as `R`, a linear solve for the innovation system, and the Joseph covariance form `(I-KH)P(I-KH)ᵀ + KRKᵀ`. Covariance is symmetrized after prediction and update. If an exact zero-noise case makes the innovation covariance singular, a least-squares solve is used only when the system is consistent; inconsistent singular measurements are rejected rather than silently regularized. Delayed observations where availability differs from measurement time are rejected. Early velocity estimates still need several observations to settle.

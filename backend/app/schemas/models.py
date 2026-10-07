@@ -126,6 +126,8 @@ class TrackEstimate(BaseModel):
     estimated_position: list[float]
     estimated_velocity: list[float]
     state_covariance: list[list[float]]
+    last_measurement_timestamp: float | None = None
+    measurement_updated: bool = False
 
 class SimulationResult(BaseModel):
     configuration: SimulationConfig

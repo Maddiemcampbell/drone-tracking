@@ -8,6 +8,7 @@ from app.tracking.kalman import (
     constant_velocity_transition,
     continuous_white_acceleration_process_noise,
     estimate,
+    estimate_at_timestamps,
 )
 
 
@@ -83,11 +84,31 @@ def test_prediction_rejects_negative_elapsed_time():
         continuous_white_acceleration_process_noise(-1, 1)
 
 
-def test_prediction_only_does_not_apply_measurement_updates():
-    estimates = estimate([observation(0, 0, 0), observation(1, 100, 100), observation(2, -50, 40)], TrackerConfig(acceleration_noise_spectral_density=0))
-    assert estimates[1].estimated_position == pytest.approx([0, 0])
-    assert estimates[2].estimated_position == pytest.approx([0, 0])
-    assert estimates[2].estimated_velocity == pytest.approx([0, 0])
+def test_measurement_update_moves_estimate_toward_observation():
+    tracker = ConstantVelocityKalmanTracker(TrackerConfig(acceleration_noise_spectral_density=0))
+    tracker.initialize(observation(0, 0, 0, covariance=[[4, 0], [0, 4]]))
+    updated = tracker.update(observation(0, 10, 8, covariance=[[1, 0], [0, 1]]))
+    assert 0 < updated.estimated_position[0] < 10
+    assert 0 < updated.estimated_position[1] < 8
+    assert updated.measurement_updated is True
+    assert updated.last_measurement_timestamp == 0
+
+
+def test_informative_measurement_reduces_position_uncertainty():
+    tracker = ConstantVelocityKalmanTracker(TrackerConfig(acceleration_noise_spectral_density=0))
+    tracker.initialize(observation(0, 0, 0, covariance=[[4, 0], [0, 9]]))
+    before = np.diag(tracker.covariance)[:2].copy()
+    updated = tracker.update(observation(0, 1, 1, covariance=[[.25, 0], [0, .25]]))
+    after = np.diag(np.asarray(updated.state_covariance))[:2]
+    assert np.all(after < before)
+
+
+def test_zero_noise_stationary_update_handles_singular_innovation_covariance():
+    tracker = ConstantVelocityKalmanTracker(TrackerConfig(initial_velocity_std_mps=0, acceleration_noise_spectral_density=0))
+    tracker.initialize(observation(0, 4, -2, covariance=[[0, 0], [0, 0]]))
+    updated = tracker.update(observation(0, 4, -2, covariance=[[0, 0], [0, 0]]))
+    assert updated.estimated_position == pytest.approx([4, -2])
+    assert np.asarray(updated.state_covariance) == pytest.approx(np.zeros((4, 4)))
 
 
 def test_tracker_accepts_cartesian_observations_only():
@@ -96,6 +117,22 @@ def test_tracker_accepts_cartesian_observations_only():
         ConstantVelocityKalmanTracker().initialize(radar)
     with pytest.raises(ValueError, match="Cartesian"):
         estimate([radar])
+
+
+def test_delayed_observations_are_rejected_for_tracking():
+    delayed = observation(2, 2, 2)
+    delayed.availability_timestamp = 3
+    with pytest.raises(ValueError, match="delayed"):
+        ConstantVelocityKalmanTracker().update(delayed)
+
+
+def test_future_observations_cannot_change_past_outputs():
+    config = TrackerConfig(acceleration_noise_spectral_density=0)
+    first = estimate_at_timestamps([observation(0, 0, 0), observation(1, 10, 0)], [0, 1, 2], config)
+    changed_future = estimate_at_timestamps([observation(0, 0, 0), observation(1, 10, 0), observation(2, 1000, 0)], [0, 1, 2], config)
+    assert len(first) == len(changed_future) == 3
+    assert first[0].estimated_position == pytest.approx(changed_future[0].estimated_position)
+    assert first[1].estimated_position == pytest.approx(changed_future[1].estimated_position)
 
 
 def test_tracker_configuration_rejects_negative_uncertainty_or_spectral_density():

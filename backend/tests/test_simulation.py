@@ -180,6 +180,47 @@ def test_radar_mode_remains_sensor_only_without_tracker_estimates():
     assert result.estimates == []
 
 
+def test_runner_emits_output_timestamps_and_updates_before_same_time_output():
+    result = run(SimulationConfig(duration_seconds=1, simulation_timestep_seconds=.5, sensor_interval_seconds=.5, measurement_noise_std_x=0, measurement_noise_std_y=0, tracker_acceleration_noise_spectral_density=0))
+    assert [estimate.timestamp for estimate in result.estimates] == pytest.approx([0, .5, 1])
+    assert [estimate.measurement_updated for estimate in result.estimates] == [True, True, True]
+    assert result.estimates[0].last_measurement_timestamp == pytest.approx(0)
+
+
+def test_runner_predicts_without_update_when_no_measurement_occurs():
+    result = run(SimulationConfig(duration_seconds=1.5, simulation_timestep_seconds=.5, sensor_interval_seconds=.75, measurement_noise_std_x=0, measurement_noise_std_y=0, tracker_acceleration_noise_spectral_density=0))
+    assert [estimate.timestamp for estimate in result.estimates] == pytest.approx([0, .5, 1, 1.5])
+    assert [estimate.measurement_updated for estimate in result.estimates] == [True, False, False, True]
+    assert result.estimates[2].last_measurement_timestamp == pytest.approx(.75)
+
+
+def test_runner_handles_irregular_measurement_intervals_causally():
+    result = run(SimulationConfig(duration_seconds=2, simulation_timestep_seconds=.1, sensor_interval_seconds=.7, measurement_noise_std_x=2, measurement_noise_std_y=2))
+    assert len(result.estimates) == len(result.truth_history)
+    assert [observation.measurement_timestamp for observation in result.observations] == pytest.approx([0, .7, 1.4])
+    update_times = [estimate.timestamp for estimate in result.estimates if estimate.measurement_updated]
+    assert update_times == pytest.approx([0, .7, 1.4])
+
+
+def test_seeded_tracker_position_rmse_beats_raw_observations_after_warmup():
+    result = run(SimulationConfig(duration_seconds=10, simulation_timestep_seconds=.1, sensor_interval_seconds=.5, measurement_noise_std_x=5, measurement_noise_std_y=5, tracker_initial_velocity_std_mps=10, tracker_acceleration_noise_spectral_density=1, random_seed=7))
+    truth_by_time = {round(state.timestamp, 10): state for state in result.truth_history}
+    estimates_by_time = {round(estimate.timestamp, 10): estimate for estimate in result.estimates}
+    observations_by_time = {round(observation.measurement_timestamp, 10): observation for observation in result.observations}
+    warm_measurement_times = sorted(timestamp for timestamp in observations_by_time if timestamp >= 2)
+    raw_squared_errors = []
+    track_squared_errors = []
+    for timestamp in warm_measurement_times:
+        truth = truth_by_time[timestamp]
+        observation = observations_by_time[timestamp]
+        estimate = estimates_by_time[timestamp]
+        raw_squared_errors.append((observation.measurement_values[0] - truth.x) ** 2 + (observation.measurement_values[1] - truth.y) ** 2)
+        track_squared_errors.append((estimate.estimated_position[0] - truth.x) ** 2 + (estimate.estimated_position[1] - truth.y) ** 2)
+    raw_rmse = math.sqrt(sum(raw_squared_errors) / len(raw_squared_errors))
+    track_rmse = math.sqrt(sum(track_squared_errors) / len(track_squared_errors))
+    assert track_rmse < raw_rmse
+
+
 def test_radar_axis_targets_use_sensor_relative_range_and_bearing():
     rng = np.random.default_rng(1)
     east = observe_range_bearing(TargetState(target_id="drone", timestamp=0, x=10, y=0, vx=0, vy=0), rng, sensor_id="radar", sensor_position=(0, 0), sensor_heading_degrees=0, range_noise_std_meters=0, bearing_noise_std_degrees=0)

@@ -3,7 +3,7 @@ from app.schemas.models import SimulationConfig, SimulationResult
 from app.simulation.motion import advance_with_turns
 from app.simulation.sensors import observe_sensor
 from app.simulation.world import initial_state
-from app.tracking.kalman import TrackerConfig, estimate
+from app.tracking.kalman import TrackerConfig, estimate_at_timestamps
 
 def run(config: SimulationConfig) -> SimulationResult:
     rng = np.random.default_rng(config.random_seed)
@@ -61,5 +61,6 @@ def run(config: SimulationConfig) -> SimulationResult:
         initial_velocity_std_mps=config.tracker_initial_velocity_std_mps,
         acceleration_noise_spectral_density=config.tracker_acceleration_noise_spectral_density,
     )
-    estimates = estimate(observations, tracker_config) if config.sensor_type == "cartesian_position" else []
+    output_timestamps = [truth_state.timestamp for truth_state in truth]
+    estimates = estimate_at_timestamps(observations, output_timestamps, tracker_config) if config.sensor_type == "cartesian_position" else []
     return SimulationResult(configuration=config, truth_history=truth, observations=observations, estimates=estimates)
