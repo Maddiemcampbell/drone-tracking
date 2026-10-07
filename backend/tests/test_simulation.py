@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
-from app.schemas.models import SensorOutage, SimulationConfig, TargetState, TurnEvent
+from app.schemas.models import CartesianSensorConfig, SensorOutage, SimulationConfig, TargetState, TurnEvent
 from app.simulation.motion import advance_with_turns
 from app.simulation.scenarios import example_scenarios
 from app.simulation.runner import run
@@ -330,3 +330,93 @@ def test_radar_configuration_rejects_negative_noise_interval_and_cartesian_bias(
         SimulationConfig(sensor_type="range_bearing", sensor_interval_seconds=0)
     with pytest.raises(ValueError, match="bias"):
         SimulationConfig(sensor_type="range_bearing", measurement_bias_x=1)
+
+
+def _two_cartesian_sensor_config(**updates) -> SimulationConfig:
+    config = SimulationConfig(
+        duration_seconds=2,
+        simulation_timestep_seconds=.1,
+        initial_speed=8,
+        position_sensor=CartesianSensorConfig(
+            sensor_id="position-A",
+            enabled=True,
+            noise_std_x=0,
+            noise_std_y=0,
+            measurement_interval_seconds=.5,
+        ),
+        camera_sensor=CartesianSensorConfig(
+            sensor_id="camera-B",
+            enabled=True,
+            noise_std_x=0,
+            noise_std_y=0,
+            measurement_interval_seconds=.75,
+            sampling_start_offset_seconds=.25,
+        ),
+    )
+    return config.model_copy(update=updates)
+
+
+def test_two_cartesian_sensors_follow_independent_sampling_schedules():
+    result = run(_two_cartesian_sensor_config())
+    by_sensor = {
+        sensor_id: [observation.measurement_timestamp for observation in result.observations if observation.sensor_id == sensor_id]
+        for sensor_id in ("position-A", "camera-B")
+    }
+    assert by_sensor["position-A"] == pytest.approx([0, .5, 1, 1.5, 2])
+    assert by_sensor["camera-B"] == pytest.approx([.25, 1, 1.75])
+    assert [(observation.measurement_timestamp, observation.sensor_id) for observation in result.observations] == [
+        (0, "position-A"),
+        (.25, "camera-B"),
+        (.5, "position-A"),
+        (1, "camera-B"),
+        (1, "position-A"),
+        (1.5, "position-A"),
+        (1.75, "camera-B"),
+        (2, "position-A"),
+    ]
+
+
+def test_two_cartesian_sensors_measure_the_same_world_coordinates():
+    result = run(_two_cartesian_sensor_config())
+    truth_by_time = {round(state.timestamp, 10): state for state in result.truth_history}
+    for observation in result.observations:
+        truth = advance_with_turns(initial_state(result.configuration), observation.measurement_timestamp, result.configuration.turn_events)
+        assert observation.measurement_values == pytest.approx([truth.x, truth.y])
+        assert not hasattr(observation, "target_id")
+
+
+def test_sensor_streams_are_deterministic_and_disabling_camera_preserves_position_samples():
+    both_config = _two_cartesian_sensor_config(random_seed=17)
+    both = run(both_config)
+    repeated = run(both_config)
+    assert both.model_dump() == repeated.model_dump()
+    camera_disabled = both_config.model_copy(update={"camera_sensor": both_config.camera_sensor.model_copy(update={"enabled": False})})
+    position_only = run(camera_disabled)
+    both_position = [observation for observation in both.observations if observation.sensor_id == "position-A"]
+    assert [observation.model_dump() for observation in both_position] == [observation.model_dump() for observation in position_only.observations]
+
+
+def test_bias_and_outage_only_affect_the_configured_sensor():
+    base = _two_cartesian_sensor_config(
+        position_sensor=CartesianSensorConfig(
+            sensor_id="position-A", enabled=True, noise_std_x=0, noise_std_y=0, measurement_interval_seconds=.5
+        ),
+        camera_sensor=CartesianSensorConfig(
+            sensor_id="camera-B", enabled=True, noise_std_x=0, noise_std_y=0, measurement_interval_seconds=.5
+        ),
+    )
+    changed_position = base.model_copy(update={
+        "position_sensor": base.position_sensor.model_copy(update={
+            "bias_x": 3,
+            "bias_y": -2,
+            "outage_windows": [SensorOutage(start_time_seconds=.5, end_time_seconds=1.5)],
+        })
+    })
+    base_result = run(base)
+    changed_result = run(changed_position)
+    base_camera = [observation for observation in base_result.observations if observation.sensor_id == "camera-B"]
+    changed_camera = [observation for observation in changed_result.observations if observation.sensor_id == "camera-B"]
+    assert [observation.model_dump() for observation in base_camera] == [observation.model_dump() for observation in changed_camera]
+    assert [observation.measurement_timestamp for observation in changed_result.observations if observation.sensor_id == "position-A"] == pytest.approx([0, 1.5, 2])
+    changed_position_first = next(observation for observation in changed_result.observations if observation.sensor_id == "position-A")
+    assert changed_position_first.measurement_values == pytest.approx([3, -2])

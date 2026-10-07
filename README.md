@@ -1,6 +1,6 @@
 # Sensor Tracking Simulator
 
-An educational, hardware-free simulator for learning motion and sensor measurements. It models one constant-velocity target with scheduled turns and one active sensor: Cartesian position or simplified radar-style range/bearing. It does not implement targeting or engagement features.
+An educational, hardware-free simulator for learning motion and sensor measurements. It models one constant-velocity target with scheduled turns, two independently configurable Cartesian position sensors, and a simplified radar-style range/bearing mode. It does not implement targeting or engagement features.
 
 ## Prerequisites
 
@@ -36,7 +36,9 @@ cd frontend && npm run typecheck && npm run build
 
 See [docs/architecture.md](docs/architecture.md) and [docs/concepts.md](docs/concepts.md). Position observations are a simplified measurement model, not raw radar signals.
 
-The Cartesian sensor samples at integer multiples of its measurement interval, starting at t=0. Measurement noise controls are standard deviations in meters; the returned covariance stores their squared values. Sensor availability currently equals measurement time. The UI can also select a simplified radar-style sensor that reports range in meters and bearing in radians relative to the configured sensor heading. Bearing noise is entered in degrees and converted to radians; the covariance therefore mixes m² and rad².
+The legacy Cartesian sensor samples at integer multiples of its measurement interval, starting at t=0. The new position and camera sensors each have a stable ID, enabled flag, x/y noise standard deviations, x/y constant biases, interval, start offset, and outage windows. Each samples the same truth in world-frame meters at `start_offset + k × interval`, with its own reproducible seeded noise stream. Measurement noise controls are standard deviations in meters; covariance stores their squared values. Availability currently equals measurement time. The UI can also select a simplified radar-style sensor that reports range in meters and bearing in radians relative to the configured sensor heading. Bearing noise is entered in degrees and converted to radians; the covariance therefore mixes m² and rad².
+
+The camera sensor is deliberately not an image simulator: it directly reports noisy world-frame x/y position. Real camera position estimates require scene geometry, depth reasoning, and calibration; optics, occlusion, and image processing are out of scope. The first sensor milestone emits both Cartesian streams, while the existing tracker remains on the original position sensor until the asynchronous fusion milestone. Radar remains sensor-only.
 
 Constant x/y bias is added to every measurement but is intentionally excluded from covariance. Random noise can average down over repeated samples; a consistent bias does not.
 
@@ -58,4 +60,4 @@ The tracker evaluation compares the causal estimate with a baseline that holds t
 
 ## Next milestones
 
-The simulator supports straight flight, scheduled constant-speed turns, controlled sensor outages, and an interactive Cartesian tracking view. Radar samples at the exact scheduled truth time; undefined-origin and negative-range samples are omitted. Deliberately out of scope for later milestones: nonlinear radar tracking, delayed observations, sensor fusion, multi-target data association, Doppler, clutter, missed detections, latency, field-of-view/detection-range rules, and track deletion/lifecycle.
+The simulator supports straight flight, scheduled constant-speed turns, controlled per-sensor outages, two Cartesian observation streams, and an interactive Cartesian tracking view. Radar samples at the exact scheduled truth time; undefined-origin and negative-range samples are omitted. Deliberately out of scope for later milestones: asynchronous sensor fusion, nonlinear radar tracking, delayed observations, multi-target data association, Doppler, clutter, missed detections, latency, field-of-view/detection-range rules, and track deletion/lifecycle.
