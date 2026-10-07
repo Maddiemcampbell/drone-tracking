@@ -1,12 +1,14 @@
 import math
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
-from app.schemas.models import SimulationConfig, TurnEvent
+from app.schemas.models import SimulationConfig, TargetState, TurnEvent
 from app.simulation.motion import advance_with_turns
 from app.simulation.scenarios import example_scenarios
 from app.simulation.runner import run
+from app.simulation.sensors import normalize_angle_radians, observe_range_bearing
 from app.simulation.world import initial_state, velocity_from_speed_heading
 
 def test_fixed_seed_is_deterministic():
@@ -99,6 +101,54 @@ def test_between_tick_measurements_use_exact_truth_timestamp():
     for observation in result.observations:
         assert observation.measurement_values == pytest.approx([8 * observation.measurement_timestamp, 0])
 
+@pytest.mark.parametrize(("interval", "expected_times"), [
+    (.25, [0, .25, .5, .75, 1]),
+    (.3, [0, .3, .6, .9]),
+    (2, [0]),
+])
+def test_sample_schedule_uses_integer_indices(interval, expected_times):
+    result = run(SimulationConfig(duration_seconds=1, sensor_interval_seconds=interval, measurement_noise_std=0))
+    assert [observation.measurement_timestamp for observation in result.observations] == pytest.approx(expected_times)
+
+def test_measurement_during_turn_uses_exact_motion_time():
+    config = SimulationConfig(duration_seconds=1, simulation_timestep_seconds=.1, sensor_interval_seconds=.25, measurement_noise_std_x=0, measurement_noise_std_y=0, initial_speed=10, turn_events=[TurnEvent(start_time_seconds=.2, duration_seconds=.4, turn_rate_degrees_per_second=90)])
+    result = run(config)
+    expected = advance_with_turns(initial_state(config), .25, config.turn_events)
+    assert result.observations[1].measurement_timestamp == pytest.approx(.25)
+    assert result.observations[1].measurement_values == pytest.approx([expected.x, expected.y])
+
+def test_sensor_metadata_and_covariance_are_configurable():
+    result = run(SimulationConfig(duration_seconds=1, measurement_noise_std_x=2, measurement_noise_std_y=3, sensor_id="roof-sensor", sensor_position_x=12, sensor_position_y=-4))
+    observation = result.observations[0]
+    assert observation.sensor_id == "roof-sensor"
+    assert observation.sensor_position == pytest.approx([12, -4])
+    assert observation.measurement_covariance == [[4, 0], [0, 9]]
+
+def test_zero_noise_with_bias_produces_configured_offset_without_changing_truth():
+    config = SimulationConfig(duration_seconds=1, sensor_interval_seconds=.25, measurement_noise_std_x=0, measurement_noise_std_y=0, measurement_bias_x=3.5, measurement_bias_y=-2)
+    result = run(config)
+    for observation in result.observations:
+        truth_x = 10 * observation.measurement_timestamp
+        truth_y = 0
+        assert observation.measurement_values == pytest.approx([truth_x + 3.5, truth_y - 2])
+        assert observation.measurement_covariance == [[0, 0], [0, 0]]
+    assert result.truth_history[-1].x == pytest.approx(10)
+    assert result.truth_history[-1].y == pytest.approx(0)
+
+def test_zero_noise_zero_bias_has_zero_position_error():
+    config = SimulationConfig(duration_seconds=1, sensor_interval_seconds=.25, measurement_noise_std_x=0, measurement_noise_std_y=0, measurement_bias_x=0, measurement_bias_y=0)
+    result = run(config)
+    for observation in result.observations:
+        assert observation.measurement_values == pytest.approx([10 * observation.measurement_timestamp, 0])
+
+def test_bias_does_not_change_motion_or_random_noise_covariance():
+    unbiased = run(SimulationConfig(duration_seconds=1, random_seed=4, measurement_noise_std_x=2, measurement_noise_std_y=3))
+    biased = run(SimulationConfig(duration_seconds=1, random_seed=4, measurement_noise_std_x=2, measurement_noise_std_y=3, measurement_bias_x=7, measurement_bias_y=-4))
+    assert unbiased.truth_history == biased.truth_history
+    for first, second in zip(unbiased.observations, biased.observations):
+        assert second.measurement_values == pytest.approx([first.measurement_values[0] + 7, first.measurement_values[1] - 4])
+        assert second.measurement_covariance == first.measurement_covariance
+
 def test_seed_changes_observations_but_not_truth():
     first = run(SimulationConfig(duration_seconds=2, random_seed=1))
     second = run(SimulationConfig(duration_seconds=2, random_seed=2))
@@ -113,9 +163,83 @@ def test_sensor_interval_changes_timing_but_not_truth():
 
 def test_invalid_config_is_rejected():
     with pytest.raises(ValueError): SimulationConfig(duration_seconds=0)
+    with pytest.raises(ValueError): SimulationConfig(sensor_interval_seconds=0)
+    with pytest.raises(ValueError): SimulationConfig(measurement_noise_std_x=-1)
+    with pytest.raises(ValueError): SimulationConfig(measurement_noise_std_y=-1)
 
 def test_api():
     client = TestClient(app)
     assert client.get("/api/health").json() == {"status": "ok"}
     response = client.post("/api/simulate", json={"duration_seconds": 1})
     assert response.status_code == 200 and "truth_history" in response.json()
+
+
+def test_radar_axis_targets_use_sensor_relative_range_and_bearing():
+    rng = np.random.default_rng(1)
+    east = observe_range_bearing(TargetState(target_id="drone", timestamp=0, x=10, y=0, vx=0, vy=0), rng, sensor_id="radar", sensor_position=(0, 0), sensor_heading_degrees=0, range_noise_std_meters=0, bearing_noise_std_degrees=0)
+    north = observe_range_bearing(TargetState(target_id="drone", timestamp=0, x=0, y=10, vx=0, vy=0), rng, sensor_id="radar", sensor_position=(0, 0), sensor_heading_degrees=0, range_noise_std_meters=0, bearing_noise_std_degrees=0)
+    assert east is not None and east.measurement_values == pytest.approx([10, 0])
+    assert north is not None and north.measurement_values == pytest.approx([10, math.pi / 2])
+
+
+def test_radar_sensor_position_and_heading_change_local_measurement():
+    state = TargetState(target_id="drone", timestamp=2, x=5, y=10, vx=0, vy=0)
+    observation = observe_range_bearing(state, np.random.default_rng(2), sensor_id="radar", sensor_position=(5, 5), sensor_heading_degrees=90, range_noise_std_meters=0, bearing_noise_std_degrees=0)
+    assert observation is not None
+    assert observation.measurement_values == pytest.approx([5, 0])
+
+
+def test_radar_zero_noise_converts_back_to_world_position_and_covariance_is_mixed_units():
+    config = SimulationConfig(sensor_type="range_bearing", duration_seconds=1, initial_x=3, initial_y=4, initial_speed=0, sensor_position_x=1, sensor_position_y=1, sensor_heading_degrees=30, range_noise_std_meters=0, bearing_noise_std_degrees=0)
+    result = run(config)
+    observation = result.observations[0]
+    measured_range, measured_bearing = observation.measurement_values
+    world_angle = math.radians(config.sensor_heading_degrees) + measured_bearing
+    assert [config.sensor_position_x + measured_range * math.cos(world_angle), config.sensor_position_y + measured_range * math.sin(world_angle)] == pytest.approx([3, 4])
+    assert observation.measurement_covariance == [[0, 0], [0, 0]]
+    noisy_config = config.model_copy(update={"bearing_noise_std_degrees": 90})
+    noisy_observation = run(noisy_config).observations[0]
+    assert noisy_observation.measurement_covariance[0] == pytest.approx([0, 0])
+    assert noisy_observation.measurement_covariance[1] == pytest.approx([0, (math.pi / 2) ** 2])
+
+
+def test_radar_bearing_wraps_to_minus_pi_inclusive_boundary():
+    target = TargetState(target_id="drone", timestamp=0, x=math.cos(math.radians(179)), y=math.sin(math.radians(179)), vx=0, vy=0)
+    observation = observe_range_bearing(target, np.random.default_rng(3), sensor_id="radar", sensor_position=(0, 0), sensor_heading_degrees=-179, range_noise_std_meters=0, bearing_noise_std_degrees=0)
+    assert observation is not None
+    assert observation.measurement_values[1] == pytest.approx(math.radians(-2))
+    assert normalize_angle_radians(math.pi) == pytest.approx(-math.pi)
+
+
+def test_radar_measurements_during_turn_use_exact_timestamp_and_preserve_timestamps():
+    config = SimulationConfig(sensor_type="range_bearing", duration_seconds=1, simulation_timestep_seconds=.1, sensor_interval_seconds=.25, range_noise_std_meters=0, bearing_noise_std_degrees=0, sensor_position_y=-10, initial_speed=10, turn_events=[TurnEvent(start_time_seconds=.2, duration_seconds=.4, turn_rate_degrees_per_second=90)])
+    result = run(config)
+    expected = advance_with_turns(initial_state(config), .25, config.turn_events)
+    observation = result.observations[1]
+    expected_range = math.hypot(expected.x, expected.y + 10)
+    expected_bearing = math.atan2(expected.y + 10, expected.x)
+    assert observation.measurement_timestamp == pytest.approx(.25)
+    assert observation.availability_timestamp == pytest.approx(.25)
+    assert observation.measurement_values == pytest.approx([expected_range, expected_bearing])
+
+
+def test_radar_origin_and_negative_noisy_range_samples_are_omitted():
+    origin = TargetState(target_id="drone", timestamp=0, x=2, y=-1, vx=0, vy=0)
+    assert observe_range_bearing(origin, np.random.default_rng(4), sensor_id="radar", sensor_position=(2, -1), sensor_heading_degrees=0, range_noise_std_meters=0, bearing_noise_std_degrees=0) is None
+
+    class NegativeRangeRng:
+        def normal(self, _mean, _std):
+            return -2.0
+
+    assert observe_range_bearing(TargetState(target_id="drone", timestamp=0, x=1, y=0, vx=0, vy=0), NegativeRangeRng(), sensor_id="radar", sensor_position=(0, 0), sensor_heading_degrees=0, range_noise_std_meters=1, bearing_noise_std_degrees=0) is None
+
+
+def test_radar_configuration_rejects_negative_noise_interval_and_cartesian_bias():
+    with pytest.raises(ValueError):
+        SimulationConfig(sensor_type="range_bearing", range_noise_std_meters=-1)
+    with pytest.raises(ValueError):
+        SimulationConfig(sensor_type="range_bearing", bearing_noise_std_degrees=-1)
+    with pytest.raises(ValueError):
+        SimulationConfig(sensor_type="range_bearing", sensor_interval_seconds=0)
+    with pytest.raises(ValueError, match="bias"):
+        SimulationConfig(sensor_type="range_bearing", measurement_bias_x=1)
