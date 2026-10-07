@@ -1,5 +1,23 @@
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
+
+
+class TurnEvent(BaseModel):
+    start_time_seconds: float = Field(
+        validation_alias=AliasChoices("start_time_seconds", "start_time"), ge=0
+    )
+    duration_seconds: float = Field(
+        validation_alias=AliasChoices("duration_seconds", "duration"), gt=0
+    )
+    turn_rate_degrees_per_second: float = Field(
+        validation_alias=AliasChoices(
+            "turn_rate_degrees_per_second", "turn_rate", "turn_rate_deg_per_sec"
+        )
+    )
+
+    @property
+    def end_time_seconds(self) -> float:
+        return self.start_time_seconds + self.duration_seconds
 
 class SimulationConfig(BaseModel):
     duration_seconds: float = Field(default=20, gt=0, le=300)
@@ -11,6 +29,19 @@ class SimulationConfig(BaseModel):
     initial_y: float = Field(default=0, ge=-100_000, le=100_000)
     initial_speed: float = Field(default=10, ge=0, le=1000)
     initial_heading_degrees: float = Field(default=0, ge=0, lt=360)
+    turn_events: list[TurnEvent] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_turn_events(self) -> "SimulationConfig":
+        events = sorted(self.turn_events, key=lambda event: event.start_time_seconds)
+        previous_end = 0.0
+        for event in events:
+            if event.end_time_seconds > self.duration_seconds:
+                raise ValueError("turn events must finish within the simulation duration")
+            if event.start_time_seconds < previous_end:
+                raise ValueError("turn events must not overlap")
+            previous_end = event.end_time_seconds
+        return self
 
 class TargetState(BaseModel):
     target_id: str

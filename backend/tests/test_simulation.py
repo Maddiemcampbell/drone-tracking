@@ -1,9 +1,13 @@
+import math
+
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
-from app.schemas.models import SimulationConfig
+from app.schemas.models import SimulationConfig, TurnEvent
+from app.simulation.motion import advance_with_turns
+from app.simulation.scenarios import example_scenarios
 from app.simulation.runner import run
-from app.simulation.world import velocity_from_speed_heading
+from app.simulation.world import initial_state, velocity_from_speed_heading
 
 def test_fixed_seed_is_deterministic():
     config = SimulationConfig(duration_seconds=2, random_seed=42)
@@ -27,6 +31,58 @@ def test_heading_90_moves_along_positive_y():
 def test_stationary_motion_is_valid():
     result = run(SimulationConfig(duration_seconds=2, initial_speed=0, initial_heading_degrees=90, initial_x=4, initial_y=-3))
     assert all(state.x == pytest.approx(4) and state.y == pytest.approx(-3) for state in result.truth_history)
+
+def test_turn_keeps_speed_constant_and_changes_heading_by_rate_times_duration():
+    config = SimulationConfig(initial_speed=10, initial_heading_degrees=0, duration_seconds=2, turn_events=[TurnEvent(start_time_seconds=0, duration_seconds=2, turn_rate_degrees_per_second=45)])
+    state = advance_with_turns(initial_state(config), 2, config.turn_events)
+    assert (state.vx**2 + state.vy**2) ** 0.5 == pytest.approx(10)
+    assert math.degrees(math.atan2(state.vy, state.vx)) == pytest.approx(90)
+
+    state = initial_state(config)
+    for _ in range(8):
+        state = advance_with_turns(state, 0.25, config.turn_events)
+        assert math.hypot(state.vx, state.vy) == pytest.approx(10)
+
+def test_turn_position_is_continuous_at_boundaries():
+    config = SimulationConfig(duration_seconds=4, turn_events=[TurnEvent(start_time_seconds=1, duration_seconds=2, turn_rate_degrees_per_second=45)])
+    start = initial_state(config)
+    at_boundary = advance_with_turns(start, 1, config.turn_events)
+    after_boundary = advance_with_turns(at_boundary, 0.000001, config.turn_events)
+    assert after_boundary.x == pytest.approx(at_boundary.x + at_boundary.vx * 0.000001, abs=1e-8)
+    assert after_boundary.y == pytest.approx(at_boundary.y + at_boundary.vy * 0.000001, abs=1e-8)
+
+def test_full_circle_returns_to_start():
+    config = SimulationConfig(duration_seconds=4, turn_events=[TurnEvent(start_time_seconds=0, duration_seconds=4, turn_rate_degrees_per_second=90)])
+    start = initial_state(config)
+    final = advance_with_turns(start, 4, config.turn_events)
+    assert final.x == pytest.approx(start.x, abs=1e-8)
+    assert final.y == pytest.approx(start.y, abs=1e-8)
+    assert final.vx == pytest.approx(start.vx, abs=1e-8)
+    assert final.vy == pytest.approx(start.vy, abs=1e-8)
+
+def test_turn_boundaries_between_ticks_are_integrated_exactly():
+    config = SimulationConfig(duration_seconds=1.2, simulation_timestep_seconds=.5, turn_events=[TurnEvent(start_time_seconds=.25, duration_seconds=.5, turn_rate_degrees_per_second=90)])
+    result = run(config)
+    expected = advance_with_turns(initial_state(config), 1.2, config.turn_events)
+    assert result.truth_history[-1].x == pytest.approx(expected.x)
+    assert result.truth_history[-1].y == pytest.approx(expected.y)
+    assert result.truth_history[-1].vx == pytest.approx(expected.vx)
+    assert result.truth_history[-1].vy == pytest.approx(expected.vy)
+
+def test_overlapping_and_invalid_turns_are_rejected():
+    with pytest.raises(ValueError):
+        SimulationConfig(duration_seconds=4, turn_events=[TurnEvent(start_time_seconds=1, duration_seconds=0, turn_rate_degrees_per_second=10)])
+    with pytest.raises(ValueError, match="overlap"):
+        SimulationConfig(duration_seconds=4, turn_events=[TurnEvent(start_time_seconds=1, duration_seconds=2, turn_rate_degrees_per_second=10), TurnEvent(start_time_seconds=2, duration_seconds=1, turn_rate_degrees_per_second=-10)])
+    with pytest.raises(ValueError, match="finish"):
+        SimulationConfig(duration_seconds=2, turn_events=[TurnEvent(start_time_seconds=1, duration_seconds=2, turn_rate_degrees_per_second=10)])
+
+def test_example_scenarios_are_available():
+    scenarios = example_scenarios()
+    assert set(scenarios) == {"straight_flight", "gradual_90_degree_turn", "s_shaped_path"}
+    assert scenarios["straight_flight"].turn_events == []
+    assert len(scenarios["gradual_90_degree_turn"].turn_events) == 1
+    assert len(scenarios["s_shaped_path"].turn_events) == 2
 
 def test_sensor_schedule_and_zero_noise():
     result = run(SimulationConfig(duration_seconds=2, simulation_timestep_seconds=.1, sensor_interval_seconds=.5, measurement_noise_std=0))

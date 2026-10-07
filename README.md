@@ -38,4 +38,4 @@ See [docs/architecture.md](docs/architecture.md) and [docs/concepts.md](docs/con
 
 ## Next milestones
 
-The observation-only constant-velocity Kalman filter is implemented and visualized as a dashed estimate path. Next: add turns and sensor dropouts, range/bearing measurements, delayed measurements, and sensor fusion.
+The simulator supports straight flight and scheduled constant-speed turns, including straight, gradual 90-degree, and S-shaped example scenarios. The observation-only constant-velocity Kalman filter is implemented and visualized as a dashed estimate path. Next: add sensor dropouts, range/bearing measurements, delayed measurements, and sensor fusion.
