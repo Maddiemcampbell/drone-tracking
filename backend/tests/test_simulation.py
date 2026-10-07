@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
-from app.schemas.models import SimulationConfig, TargetState, TurnEvent
+from app.schemas.models import SensorOutage, SimulationConfig, TargetState, TurnEvent
 from app.simulation.motion import advance_with_turns
 from app.simulation.scenarios import example_scenarios
 from app.simulation.runner import run
@@ -81,10 +81,50 @@ def test_overlapping_and_invalid_turns_are_rejected():
 
 def test_example_scenarios_are_available():
     scenarios = example_scenarios()
-    assert set(scenarios) == {"straight_flight", "gradual_90_degree_turn", "s_shaped_path"}
+    assert set(scenarios) == {"straight_flight", "gradual_90_degree_turn", "s_shaped_path", "straight_with_outage", "turn_with_measurements", "turn_during_outage"}
     assert scenarios["straight_flight"].turn_events == []
     assert len(scenarios["gradual_90_degree_turn"].turn_events) == 1
     assert len(scenarios["s_shaped_path"].turn_events) == 2
+    assert scenarios["straight_with_outage"].outage_windows[0].start_time_seconds == 5
+    assert len(scenarios["turn_during_outage"].outage_windows) == 1
+
+
+def test_outage_windows_use_half_open_boundaries_and_are_validated():
+    result = run(SimulationConfig(duration_seconds=2.5, sensor_interval_seconds=.5, measurement_noise_std=0, outage_windows=[SensorOutage(start_time_seconds=1, end_time_seconds=2)]))
+    assert [observation.measurement_timestamp for observation in result.observations] == pytest.approx([0, .5, 2, 2.5])
+    with pytest.raises(ValueError, match="after"):
+        SimulationConfig(duration_seconds=3, outage_windows=[SensorOutage(start_time_seconds=1, end_time_seconds=1)])
+    with pytest.raises(ValueError, match="finish"):
+        SimulationConfig(duration_seconds=2, outage_windows=[SensorOutage(start_time_seconds=1, end_time_seconds=3)])
+    with pytest.raises(ValueError, match="overlap"):
+        SimulationConfig(duration_seconds=4, outage_windows=[SensorOutage(start_time_seconds=1, end_time_seconds=3), SensorOutage(start_time_seconds=2, end_time_seconds=4)])
+
+
+def test_outage_preserves_seeded_noise_for_unaffected_samples_and_truth():
+    base = run(SimulationConfig(duration_seconds=3, sensor_interval_seconds=.5, random_seed=22, measurement_noise_std_x=3, measurement_noise_std_y=4))
+    outage = run(SimulationConfig(duration_seconds=3, sensor_interval_seconds=.5, random_seed=22, measurement_noise_std_x=3, measurement_noise_std_y=4, outage_windows=[SensorOutage(start_time_seconds=1, end_time_seconds=2)]))
+    assert outage.truth_history == base.truth_history
+    base_by_time = {observation.measurement_timestamp: observation for observation in base.observations}
+    for observation in outage.observations:
+        if observation.measurement_timestamp < 1 or observation.measurement_timestamp >= 2:
+            assert observation.measurement_values == pytest.approx(base_by_time[observation.measurement_timestamp].measurement_values)
+
+
+def test_tracker_predicts_through_outage_and_reports_measurement_age():
+    result = run(SimulationConfig(duration_seconds=2, simulation_timestep_seconds=.5, sensor_interval_seconds=.5, random_seed=3, measurement_noise_std_x=1, measurement_noise_std_y=1, tracker_acceleration_noise_spectral_density=2, outage_windows=[SensorOutage(start_time_seconds=1, end_time_seconds=2)]))
+    assert [estimate.timestamp for estimate in result.estimates] == pytest.approx([0, .5, 1, 1.5, 2])
+    assert [estimate.measurement_updated for estimate in result.estimates] == [True, True, False, False, True]
+    assert result.estimates[2].last_measurement_timestamp == pytest.approx(.5)
+    assert result.estimates[2].measurement_age_seconds == pytest.approx(.5)
+    assert result.estimates[3].measurement_age_seconds == pytest.approx(1)
+    assert np.trace(np.asarray(result.estimates[3].state_covariance)) > np.trace(np.asarray(result.estimates[2].state_covariance))
+    assert result.estimates[4].measurement_updated is True
+
+
+def test_outage_before_first_observation_leaves_tracker_uninitialized():
+    result = run(SimulationConfig(duration_seconds=2, sensor_interval_seconds=.75, outage_windows=[SensorOutage(start_time_seconds=0, end_time_seconds=2)]))
+    assert result.observations == []
+    assert result.estimates == []
 
 def test_sensor_schedule_and_zero_noise():
     result = run(SimulationConfig(duration_seconds=2, simulation_timestep_seconds=.1, sensor_interval_seconds=.5, measurement_noise_std=0))
@@ -172,6 +212,53 @@ def test_api():
     assert client.get("/api/health").json() == {"status": "ok"}
     response = client.post("/api/simulate", json={"duration_seconds": 1})
     assert response.status_code == 200 and "truth_history" in response.json()
+
+
+def test_radar_mode_remains_sensor_only_without_tracker_estimates():
+    result = run(SimulationConfig(sensor_type="range_bearing", duration_seconds=1, range_noise_std_meters=0, bearing_noise_std_degrees=0, sensor_position_y=-1))
+    assert result.observations
+    assert result.estimates == []
+
+
+def test_runner_emits_output_timestamps_and_updates_before_same_time_output():
+    result = run(SimulationConfig(duration_seconds=1, simulation_timestep_seconds=.5, sensor_interval_seconds=.5, measurement_noise_std_x=0, measurement_noise_std_y=0, tracker_acceleration_noise_spectral_density=0))
+    assert [estimate.timestamp for estimate in result.estimates] == pytest.approx([0, .5, 1])
+    assert [estimate.measurement_updated for estimate in result.estimates] == [True, True, True]
+    assert result.estimates[0].last_measurement_timestamp == pytest.approx(0)
+
+
+def test_runner_predicts_without_update_when_no_measurement_occurs():
+    result = run(SimulationConfig(duration_seconds=1.5, simulation_timestep_seconds=.5, sensor_interval_seconds=.75, measurement_noise_std_x=0, measurement_noise_std_y=0, tracker_acceleration_noise_spectral_density=0))
+    assert [estimate.timestamp for estimate in result.estimates] == pytest.approx([0, .5, 1, 1.5])
+    assert [estimate.measurement_updated for estimate in result.estimates] == [True, False, False, True]
+    assert result.estimates[2].last_measurement_timestamp == pytest.approx(.75)
+
+
+def test_runner_handles_irregular_measurement_intervals_causally():
+    result = run(SimulationConfig(duration_seconds=2, simulation_timestep_seconds=.1, sensor_interval_seconds=.7, measurement_noise_std_x=2, measurement_noise_std_y=2))
+    assert len(result.estimates) == len(result.truth_history)
+    assert [observation.measurement_timestamp for observation in result.observations] == pytest.approx([0, .7, 1.4])
+    update_times = [estimate.timestamp for estimate in result.estimates if estimate.measurement_updated]
+    assert update_times == pytest.approx([0, .7, 1.4])
+
+
+def test_seeded_tracker_position_rmse_beats_raw_observations_after_warmup():
+    result = run(SimulationConfig(duration_seconds=10, simulation_timestep_seconds=.1, sensor_interval_seconds=.5, measurement_noise_std_x=5, measurement_noise_std_y=5, tracker_initial_velocity_std_mps=10, tracker_acceleration_noise_spectral_density=1, random_seed=7))
+    truth_by_time = {round(state.timestamp, 10): state for state in result.truth_history}
+    estimates_by_time = {round(estimate.timestamp, 10): estimate for estimate in result.estimates}
+    observations_by_time = {round(observation.measurement_timestamp, 10): observation for observation in result.observations}
+    warm_measurement_times = sorted(timestamp for timestamp in observations_by_time if timestamp >= 2)
+    raw_squared_errors = []
+    track_squared_errors = []
+    for timestamp in warm_measurement_times:
+        truth = truth_by_time[timestamp]
+        observation = observations_by_time[timestamp]
+        estimate = estimates_by_time[timestamp]
+        raw_squared_errors.append((observation.measurement_values[0] - truth.x) ** 2 + (observation.measurement_values[1] - truth.y) ** 2)
+        track_squared_errors.append((estimate.estimated_position[0] - truth.x) ** 2 + (estimate.estimated_position[1] - truth.y) ** 2)
+    raw_rmse = math.sqrt(sum(raw_squared_errors) / len(raw_squared_errors))
+    track_rmse = math.sqrt(sum(track_squared_errors) / len(track_squared_errors))
+    assert track_rmse < raw_rmse
 
 
 def test_radar_axis_targets_use_sensor_relative_range_and_bearing():

@@ -1,4 +1,4 @@
-from app.schemas.models import SimulationConfig, TurnEvent
+from app.schemas.models import SensorOutage, SimulationConfig, TurnEvent
 
 
 def example_scenarios() -> dict[str, SimulationConfig]:
@@ -29,5 +29,18 @@ def example_scenarios() -> dict[str, SimulationConfig]:
                     turn_rate_degrees_per_second=-30,
                 ),
             ],
+        ),
+        "straight_with_outage": SimulationConfig(
+            duration_seconds=20,
+            outage_windows=[SensorOutage(start_time_seconds=5, end_time_seconds=8)],
+        ),
+        "turn_with_measurements": SimulationConfig(
+            duration_seconds=20,
+            turn_events=[TurnEvent(start_time_seconds=8, duration_seconds=4, turn_rate_degrees_per_second=22.5)],
+        ),
+        "turn_during_outage": SimulationConfig(
+            duration_seconds=20,
+            turn_events=[TurnEvent(start_time_seconds=8, duration_seconds=4, turn_rate_degrees_per_second=22.5)],
+            outage_windows=[SensorOutage(start_time_seconds=7, end_time_seconds=13)],
         ),
     }

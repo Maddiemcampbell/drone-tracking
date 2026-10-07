@@ -50,6 +50,12 @@ Use the learning preset selector in the UI:
 
 The optional noise overlay illustrates configured standard deviations. It is not a guaranteed bound or tracker confidence region. Radar dots are converted to world coordinates for display, while the original range/bearing measurement remains authoritative.
 
+Outage scenarios use half-open `[start, end)` windows. The drone continues its true motion and the sensor schedule resumes normally after the window. During the gap, the tracker predicts without measurements, preserves the last measurement timestamp, and exposes measurement age. It does not receive the outage schedule or any true turn information.
+
+In Cartesian mode, the tracking view separates the true path, measured dots, causal estimated track, estimated velocity, and the latest 95% position uncertainty ellipse. The ellipse uses the x/y covariance block and the 2D chi-square factor 5.991; it reflects the filter's model assumptions and is not a guaranteed boundary. Tracker controls include acceleration-noise spectral density `q` in m²/s³ (motion-model uncertainty) and initial velocity uncertainty in m/s. Changing run controls requires **Run simulation**; playback controls only move through the completed result.
+
+The tracker evaluation compares the causal estimate with a baseline that holds the latest available measured position at the same emitted output timestamps. It reports position RMSE after an explicitly selected warm-up period. Truth is used only by simulator visualization/evaluation code, never as tracker input. A low `q` favors smoother estimates; a high `q` lets the filter respond more readily to motion changes. A constant-velocity filter can lag behind turns, and a biased sensor can produce a confidently wrong estimate.
+
 ## Next milestones
 
-The simulator supports straight flight and scheduled constant-speed turns, including straight, gradual 90-degree, and S-shaped example scenarios, plus Cartesian and simplified radar-style observations. Radar samples at the exact scheduled truth time; undefined-origin and negative-range samples are omitted. Deliberately out of scope for later milestones: Doppler, clutter, missed detections, latency, field-of-view/detection-range rules, tracking, and multi-sensor fusion.
+The simulator supports straight flight, scheduled constant-speed turns, controlled sensor outages, and an interactive Cartesian tracking view. Radar samples at the exact scheduled truth time; undefined-origin and negative-range samples are omitted. Deliberately out of scope for later milestones: nonlinear radar tracking, delayed observations, sensor fusion, multi-target data association, Doppler, clutter, missed detections, latency, field-of-view/detection-range rules, and track deletion/lifecycle.

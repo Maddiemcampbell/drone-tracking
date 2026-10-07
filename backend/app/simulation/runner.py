@@ -3,27 +3,36 @@ from app.schemas.models import SimulationConfig, SimulationResult
 from app.simulation.motion import advance_with_turns
 from app.simulation.sensors import observe_sensor
 from app.simulation.world import initial_state
-from app.tracking.kalman import estimate
+from app.tracking.kalman import TrackerConfig, estimate_at_timestamps
+
+
+def _is_sensor_outage(timestamp: float, config: SimulationConfig) -> bool:
+    return any(window.start_time_seconds <= timestamp < window.end_time_seconds for window in config.outage_windows)
+
+
+def _scheduled_observation(state, config: SimulationConfig, rng: np.random.Generator):
+    return observe_sensor(
+        state,
+        rng=rng,
+        sensor_type=config.sensor_type,
+        sensor_id=config.sensor_id,
+        sensor_position=(config.sensor_position_x, config.sensor_position_y),
+        noise_std_x=config.measurement_noise_std_x,
+        noise_std_y=config.measurement_noise_std_y,
+        bias_x=config.measurement_bias_x,
+        bias_y=config.measurement_bias_y,
+        sensor_heading_degrees=config.sensor_heading_degrees,
+        range_noise_std_meters=config.range_noise_std_meters,
+        bearing_noise_std_degrees=config.bearing_noise_std_degrees,
+    )
+
 
 def run(config: SimulationConfig) -> SimulationResult:
     rng = np.random.default_rng(config.random_seed)
     state = initial_state(config)
     truth = [state]
-    first_observation = observe_sensor(
-            state,
-            rng=rng,
-            sensor_type=config.sensor_type,
-            sensor_id=config.sensor_id,
-            sensor_position=(config.sensor_position_x, config.sensor_position_y),
-            noise_std_x=config.measurement_noise_std_x,
-            noise_std_y=config.measurement_noise_std_y,
-            bias_x=config.measurement_bias_x,
-            bias_y=config.measurement_bias_y,
-            sensor_heading_degrees=config.sensor_heading_degrees,
-            range_noise_std_meters=config.range_noise_std_meters,
-            bearing_noise_std_degrees=config.bearing_noise_std_degrees,
-        )
-    observations = [first_observation] if first_observation is not None else []
+    first_observation = _scheduled_observation(state, config, rng)
+    observations = [first_observation] if first_observation is not None and not _is_sensor_outage(0, config) else []
     sample_index = 1
     while True:
         timestamp = state.timestamp
@@ -37,25 +46,17 @@ def run(config: SimulationConfig) -> SimulationResult:
                 break
             if measurement_time > timestamp + 1e-9:
                 measurement_state = advance_with_turns(state, measurement_time - timestamp, config.turn_events)
-                observation = observe_sensor(
-                        measurement_state,
-                        rng=rng,
-                        sensor_type=config.sensor_type,
-                        sensor_id=config.sensor_id,
-                        sensor_position=(config.sensor_position_x, config.sensor_position_y),
-                        noise_std_x=config.measurement_noise_std_x,
-                        noise_std_y=config.measurement_noise_std_y,
-                        bias_x=config.measurement_bias_x,
-                        bias_y=config.measurement_bias_y,
-                        sensor_heading_degrees=config.sensor_heading_degrees,
-                        range_noise_std_meters=config.range_noise_std_meters,
-                        bearing_noise_std_degrees=config.bearing_noise_std_degrees,
-                    )
-                if observation is not None:
+                observation = _scheduled_observation(measurement_state, config, rng)
+                if observation is not None and not _is_sensor_outage(measurement_time, config):
                     observations.append(observation)
             sample_index += 1
         state = advance_with_turns(state, dt, config.turn_events)
         if state.timestamp > truth[-1].timestamp + 1e-9:
             truth.append(state)
-    estimates = estimate(observations) if config.sensor_type == "cartesian_position" else []
+    tracker_config = TrackerConfig(
+        initial_velocity_std_mps=config.tracker_initial_velocity_std_mps,
+        acceleration_noise_spectral_density=config.tracker_acceleration_noise_spectral_density,
+    )
+    output_timestamps = [truth_state.timestamp for truth_state in truth]
+    estimates = estimate_at_timestamps(observations, output_timestamps, tracker_config) if config.sensor_type == "cartesian_position" else []
     return SimulationResult(configuration=config, truth_history=truth, observations=observations, estimates=estimates)

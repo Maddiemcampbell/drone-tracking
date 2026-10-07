@@ -19,6 +19,21 @@ class TurnEvent(BaseModel):
     def end_time_seconds(self) -> float:
         return self.start_time_seconds + self.duration_seconds
 
+
+class SensorOutage(BaseModel):
+    start_time_seconds: float = Field(
+        validation_alias=AliasChoices("start_time_seconds", "start_time"), ge=0
+    )
+    end_time_seconds: float = Field(
+        validation_alias=AliasChoices("end_time_seconds", "end_time"), gt=0
+    )
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "SensorOutage":
+        if self.end_time_seconds <= self.start_time_seconds:
+            raise ValueError("sensor outage end must be after its start")
+        return self
+
 class SimulationConfig(BaseModel):
     duration_seconds: float = Field(default=20, gt=0, le=300)
     simulation_timestep_seconds: float = Field(default=0.1, gt=0, le=1)
@@ -69,6 +84,9 @@ class SimulationConfig(BaseModel):
         le=1000,
     )
     bearing_noise_std_degrees: float = Field(default=2, ge=0, le=360)
+    tracker_initial_velocity_std_mps: float = Field(default=10, ge=0, le=1000)
+    tracker_acceleration_noise_spectral_density: float = Field(default=1, ge=0, le=1000)
+    outage_windows: list[SensorOutage] = Field(default_factory=list)
     random_seed: int = Field(default=7, ge=0, le=2**31 - 1)
     initial_x: float = Field(default=0, ge=-100_000, le=100_000)
     initial_y: float = Field(default=0, ge=-100_000, le=100_000)
@@ -99,6 +117,14 @@ class SimulationConfig(BaseModel):
             previous_end = event.end_time_seconds
         if self.sensor_type == "range_bearing" and (self.measurement_bias_x != 0 or self.measurement_bias_y != 0):
             raise ValueError("range/bearing sensors do not support Cartesian bias")
+        outages = sorted(self.outage_windows, key=lambda window: window.start_time_seconds)
+        previous_end = 0.0
+        for window in outages:
+            if window.end_time_seconds > self.duration_seconds:
+                raise ValueError("sensor outage windows must finish within the simulation duration")
+            if window.start_time_seconds < previous_end:
+                raise ValueError("sensor outage windows must not overlap")
+            previous_end = window.end_time_seconds
         return self
 
 class TargetState(BaseModel):
@@ -124,6 +150,9 @@ class TrackEstimate(BaseModel):
     estimated_position: list[float]
     estimated_velocity: list[float]
     state_covariance: list[list[float]]
+    last_measurement_timestamp: float | None = None
+    measurement_age_seconds: float | None = None
+    measurement_updated: bool = False
 
 class SimulationResult(BaseModel):
     configuration: SimulationConfig
