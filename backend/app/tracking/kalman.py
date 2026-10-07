@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from app.schemas.models import SensorObservation, TrackEstimate
+from app.schemas.models import SensorObservation, TrackEstimate, TrackUpdateDiagnostic
 
 STATE_SIZE = 4
 MEASUREMENT_SIZE = 2
@@ -91,6 +91,8 @@ class ConstantVelocityKalmanTracker:
     def initialize(self, observation: SensorObservation) -> TrackEstimate:
         """Initialize position and covariance from the first Cartesian observation."""
         self._validate_cartesian_observation(observation)
+        if observation.availability_timestamp != observation.measurement_timestamp:
+            raise ValueError("delayed observations are not supported by the tracker")
         if observation.measurement_timestamp < 0:
             raise ValueError("measurement timestamp must be non-negative")
         values = np.asarray(observation.measurement_values, dtype=float)
@@ -123,11 +125,23 @@ class ConstantVelocityKalmanTracker:
 
     def update(self, observation: SensorObservation) -> TrackEstimate:
         """Predict to and incorporate one same-time Cartesian observation."""
+        estimate, _ = self.process_observation(observation)
+        return estimate
+
+    def process_observation(self, observation: SensorObservation) -> tuple[TrackEstimate, TrackUpdateDiagnostic]:
+        """Process one observation and expose its causal innovation diagnostic."""
         self._validate_cartesian_observation(observation)
         if observation.availability_timestamp != observation.measurement_timestamp:
             raise ValueError("delayed observations are not supported by the tracker")
         if not self.initialized:
-            return self.initialize(observation)
+            estimate = self.initialize(observation)
+            return estimate, TrackUpdateDiagnostic(
+                sensor_id=observation.sensor_id,
+                measurement_timestamp=observation.measurement_timestamp,
+                innovation=[0.0, 0.0],
+                initialized=True,
+                updated=False,
+            )
         assert self.timestamp is not None and self.state is not None and self.covariance is not None
         self.predict_to(observation.measurement_timestamp)
         measurement = np.asarray(observation.measurement_values, dtype=float)
@@ -142,7 +156,13 @@ class ConstantVelocityKalmanTracker:
         self.timestamp = observation.measurement_timestamp
         self.last_measurement_timestamp = observation.measurement_timestamp
         self.measurement_updated = True
-        return self.snapshot()
+        return self.snapshot(), TrackUpdateDiagnostic(
+            sensor_id=observation.sensor_id,
+            measurement_timestamp=observation.measurement_timestamp,
+            innovation=innovation.tolist(),
+            initialized=False,
+            updated=True,
+        )
 
     def snapshot(self) -> TrackEstimate:
         self._require_initialized()
@@ -184,33 +204,46 @@ def estimate(observations: list[SensorObservation], config: TrackerConfig | None
     """Process observations causally, returning one output per observation event."""
     tracker = ConstantVelocityKalmanTracker(config)
     estimates: list[TrackEstimate] = []
-    for observation in sorted(observations, key=lambda item: item.measurement_timestamp):
-        estimates.append(tracker.update(observation))
+    for observation in sorted(observations, key=lambda item: (item.measurement_timestamp, item.sensor_id)):
+        estimates.append(tracker.process_observation(observation)[0])
     return estimates
 
 
 def estimate_at_timestamps(observations: list[SensorObservation], output_timestamps: list[float], config: TrackerConfig | None = None) -> list[TrackEstimate]:
+    """Return causal estimates while preserving the established API."""
+    estimates, _ = estimate_at_timestamps_with_diagnostics(observations, output_timestamps, config)
+    return estimates
+
+
+def estimate_at_timestamps_with_diagnostics(
+    observations: list[SensorObservation],
+    output_timestamps: list[float],
+    config: TrackerConfig | None = None,
+) -> tuple[list[TrackEstimate], list[TrackUpdateDiagnostic]]:
     """Merge measurement/output events and emit causal estimates at output times.
 
     Measurement events sort before output events at the same timestamp, so a
     measurement is incorporated before that timestamp's estimate is emitted.
     Outputs before the first available observation are omitted because the
-    tracker is uninitialized.
+    tracker is uninitialized. Measurements at the same time are ordered by
+    sensor ID and are processed sequentially without an extra prediction step.
     """
     for observation in observations:
         if observation.availability_timestamp != observation.measurement_timestamp:
             raise ValueError("delayed observations are not supported by the tracker")
     tracker = ConstantVelocityKalmanTracker(config)
-    events = [(observation.measurement_timestamp, 0, "measurement", observation) for observation in observations]
-    events.extend((timestamp, 1, "output", None) for timestamp in output_timestamps)
-    events.sort(key=lambda event: (event[0], event[1]))
+    events = [(observation.measurement_timestamp, 0, observation.sensor_id, "measurement", observation) for observation in observations]
+    events.extend((timestamp, 1, "", "output", None) for timestamp in output_timestamps)
+    events.sort(key=lambda event: (event[0], event[1], event[2]))
     estimates: list[TrackEstimate] = []
-    for timestamp, _, event_type, observation in events:
+    diagnostics: list[TrackUpdateDiagnostic] = []
+    for timestamp, _, _, event_type, observation in events:
         if event_type == "measurement":
             assert observation is not None
-            tracker.update(observation)
+            _, diagnostic = tracker.process_observation(observation)
+            diagnostics.append(diagnostic)
         elif tracker.initialized:
             if tracker.timestamp is not None and timestamp > tracker.timestamp:
                 tracker.predict_to(timestamp)
             estimates.append(tracker.snapshot())
-    return estimates
+    return estimates, diagnostics

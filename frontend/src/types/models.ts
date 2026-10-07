@@ -5,4 +5,5 @@ export type SimulationConfig = { duration_seconds:number; simulation_timestep_se
 export type TargetState = { target_id:string; timestamp:number; x:number; y:number; vx:number; vy:number };
 export type SensorObservation = { sensor_id:string; measurement_timestamp:number; availability_timestamp:number; measurement_type:'cartesian_position'|'range_bearing'; measurement_values:number[]; measurement_covariance:number[][]; sensor_position:number[] };
 export type TrackEstimate = { track_id:string; timestamp:number; estimated_position:number[]; estimated_velocity:number[]; state_covariance:number[][]; last_measurement_timestamp:number|null; measurement_age_seconds:number|null; measurement_updated:boolean };
-export type SimulationResult = { configuration:SimulationConfig; truth_history:TargetState[]; observations:SensorObservation[]; estimates:TrackEstimate[] };
+export type TrackUpdateDiagnostic = { sensor_id:string; measurement_timestamp:number; innovation:number[]; initialized:boolean; updated:boolean };
+export type SimulationResult = { configuration:SimulationConfig; truth_history:TargetState[]; observations:SensorObservation[]; estimates:TrackEstimate[]; comparison_estimates:Record<string, TrackEstimate[]>; update_diagnostics:TrackUpdateDiagnostic[] };

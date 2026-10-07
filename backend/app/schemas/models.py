@@ -215,8 +215,19 @@ class TrackEstimate(BaseModel):
     measurement_age_seconds: float | None = None
     measurement_updated: bool = False
 
+
+class TrackUpdateDiagnostic(BaseModel):
+    sensor_id: str
+    measurement_timestamp: float
+    innovation: list[float] = Field(min_length=2, max_length=2)
+    initialized: bool = False
+    updated: bool = False
+
+
 class SimulationResult(BaseModel):
     configuration: SimulationConfig
     truth_history: list[TargetState]
     observations: list[SensorObservation]
     estimates: list[TrackEstimate] = []
+    comparison_estimates: dict[str, list[TrackEstimate]] = Field(default_factory=dict)
+    update_diagnostics: list[TrackUpdateDiagnostic] = Field(default_factory=list)

@@ -8,7 +8,7 @@ from app.schemas.models import SensorOutage, SimulationConfig, SimulationResult
 from app.simulation.motion import advance_with_turns
 from app.simulation.sensors import observe_sensor
 from app.simulation.world import initial_state
-from app.tracking.kalman import TrackerConfig, estimate_at_timestamps
+from app.tracking.kalman import TrackerConfig, estimate_at_timestamps_with_diagnostics
 
 EPSILON = 1e-9
 
@@ -180,12 +180,34 @@ def run(config: SimulationConfig) -> SimulationResult:
         acceleration_noise_spectral_density=config.tracker_acceleration_noise_spectral_density,
     )
     output_timestamps = [truth_state.timestamp for truth_state in truth]
-    # The first milestone emits both Cartesian sensors, but keeps the existing
-    # single-position tracking behavior until fusion consumes all sensor IDs.
-    tracking_observations = (
-        [observation for observation in observations if observation.sensor_id == config.position_sensor.sensor_id]
-        if config.sensor_type == "cartesian_position" and config.position_sensor is not None
-        else []
+    if config.sensor_type != "cartesian_position":
+        return SimulationResult(configuration=config, truth_history=truth, observations=observations)
+
+    assert config.position_sensor is not None
+    sensor_a_observations = [
+        observation for observation in observations if observation.sensor_id == config.position_sensor.sensor_id
+    ]
+    sensor_b_observations = [
+        observation for observation in observations if observation.sensor_id == config.camera_sensor.sensor_id
+    ]
+    comparison_inputs = {
+        "sensor_a": sensor_a_observations,
+        "sensor_b": sensor_b_observations,
+        "both": observations,
+    }
+    comparison_estimates: dict[str, list] = {}
+    for name, comparison_observations in comparison_inputs.items():
+        comparison_estimates[name] = (
+            estimate_at_timestamps_with_diagnostics(comparison_observations, output_timestamps, tracker_config)[0]
+            if comparison_observations
+            else []
+        )
+    estimates, diagnostics = estimate_at_timestamps_with_diagnostics(observations, output_timestamps, tracker_config) if observations else ([], [])
+    return SimulationResult(
+        configuration=config,
+        truth_history=truth,
+        observations=observations,
+        estimates=estimates,
+        comparison_estimates=comparison_estimates,
+        update_diagnostics=diagnostics,
     )
-    estimates = estimate_at_timestamps(tracking_observations, output_timestamps, tracker_config) if tracking_observations else []
-    return SimulationResult(configuration=config, truth_history=truth, observations=observations, estimates=estimates)

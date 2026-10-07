@@ -420,3 +420,47 @@ def test_bias_and_outage_only_affect_the_configured_sensor():
     assert [observation.measurement_timestamp for observation in changed_result.observations if observation.sensor_id == "position-A"] == pytest.approx([0, 1.5, 2])
     changed_position_first = next(observation for observation in changed_result.observations if observation.sensor_id == "position-A")
     assert changed_position_first.measurement_values == pytest.approx([3, -2])
+
+
+def test_fused_track_processes_each_sensor_observation_once_in_chronological_order():
+    config = _two_cartesian_sensor_config(
+        position_sensor=CartesianSensorConfig(
+            sensor_id="sensor-b", enabled=True, noise_std_x=1, noise_std_y=1, measurement_interval_seconds=.5
+        ),
+        camera_sensor=CartesianSensorConfig(
+            sensor_id="sensor-a", enabled=True, noise_std_x=2, noise_std_y=2, measurement_interval_seconds=.5
+        ),
+    )
+    result = run(config)
+    assert len(result.update_diagnostics) == len(result.observations)
+    assert [(diagnostic.measurement_timestamp, diagnostic.sensor_id) for diagnostic in result.update_diagnostics] == [
+        (observation.measurement_timestamp, observation.sensor_id) for observation in result.observations
+    ]
+    assert result.update_diagnostics[0].initialized is True
+    assert all(diagnostic.updated for diagnostic in result.update_diagnostics[1:])
+
+
+def test_comparison_tracks_reuse_the_same_observations_and_fused_track():
+    result = run(_two_cartesian_sensor_config(random_seed=31))
+    assert set(result.comparison_estimates) == {"sensor_a", "sensor_b", "both"}
+    assert result.estimates == result.comparison_estimates["both"]
+    position_id = result.configuration.position_sensor.sensor_id
+    camera_id = result.configuration.camera_sensor.sensor_id
+    assert len(result.comparison_estimates["sensor_a"]) > 0
+    assert len(result.comparison_estimates["sensor_b"]) > 0
+    assert [observation.sensor_id for observation in result.observations if observation.sensor_id == position_id]
+    assert [observation.sensor_id for observation in result.observations if observation.sensor_id == camera_id]
+
+
+def test_fused_track_is_causal_when_a_future_sensor_observation_changes():
+    config = _two_cartesian_sensor_config(random_seed=9)
+    original = run(config)
+    changed_observations = [observation.model_copy(deep=True) for observation in original.observations]
+    changed_observations[-1].measurement_values[0] += 1000
+    from app.tracking.kalman import TrackerConfig, estimate_at_timestamps
+
+    output_timestamps = [state.timestamp for state in original.truth_history]
+    original_estimates = estimate_at_timestamps(original.observations, output_timestamps, TrackerConfig())
+    changed_estimates = estimate_at_timestamps(changed_observations, output_timestamps, TrackerConfig())
+    for first, second in zip(original_estimates[:-1], changed_estimates[:-1]):
+        assert first.estimated_position == pytest.approx(second.estimated_position)
