@@ -9,12 +9,13 @@ from app.tracking.kalman import (
     continuous_white_acceleration_process_noise,
     estimate,
     estimate_at_timestamps,
+    estimate_at_timestamps_with_diagnostics,
 )
 
 
-def observation(timestamp: float, x: float, y: float, measurement_type: str = "cartesian_position", covariance: list[list[float]] | None = None) -> SensorObservation:
+def observation(timestamp: float, x: float, y: float, measurement_type: str = "cartesian_position", covariance: list[list[float]] | None = None, sensor_id: str = "sensor-1") -> SensorObservation:
     return SensorObservation(
-        sensor_id="sensor-1",
+        sensor_id=sensor_id,
         measurement_timestamp=timestamp,
         availability_timestamp=timestamp,
         measurement_type=measurement_type,
@@ -92,6 +93,58 @@ def test_measurement_update_moves_estimate_toward_observation():
     assert 0 < updated.estimated_position[1] < 8
     assert updated.measurement_updated is True
     assert updated.last_measurement_timestamp == 0
+
+
+def test_simultaneous_sensor_updates_follow_sensor_id_order_and_expose_diagnostics():
+    config = TrackerConfig(acceleration_noise_spectral_density=0)
+    first = observation(0, 0, 0, sensor_id="sensor-b")
+    second = observation(0, 10, 4, sensor_id="sensor-a")
+    estimates, diagnostics = estimate_at_timestamps_with_diagnostics([first, second], [0], config)
+    assert [diagnostic.sensor_id for diagnostic in diagnostics] == ["sensor-a", "sensor-b"]
+    assert diagnostics[0].initialized is True and diagnostics[0].updated is False
+    assert diagnostics[1].initialized is False and diagnostics[1].updated is True
+    assert len(estimates) == 1
+
+
+def test_sequential_simultaneous_updates_match_joint_linear_update():
+    state = np.array([1.0, -2.0, .5, -1.0])
+    covariance = np.diag([10.0, 12.0, 2.0, 3.0])
+    first = observation(0, 2, 4, covariance=[[4, 0], [0, 5]], sensor_id="sensor-a")
+    second = observation(0, 5, -1, covariance=[[1, 0], [0, 2]], sensor_id="sensor-b")
+    tracker = ConstantVelocityKalmanTracker(TrackerConfig(acceleration_noise_spectral_density=0))
+    tracker.state = state.copy()
+    tracker.covariance = covariance.copy()
+    tracker.timestamp = 0
+    tracker.last_measurement_timestamp = 0
+    tracker.process_observation(first)
+    tracker.process_observation(second)
+
+    measurement_matrix = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=float)
+    joint_matrix = np.vstack([measurement_matrix, measurement_matrix])
+    joint_measurement = np.array(first.measurement_values + second.measurement_values, dtype=float)
+    joint_covariance = np.diag([4.0, 5.0, 1.0, 2.0])
+    innovation = joint_measurement - joint_matrix @ state
+    innovation_covariance = joint_matrix @ covariance @ joint_matrix.T + joint_covariance
+    gain = covariance @ joint_matrix.T @ np.linalg.inv(innovation_covariance)
+    expected_state = state + gain @ innovation
+    identity = np.eye(4)
+    expected_covariance = (identity - gain @ joint_matrix) @ covariance @ (identity - gain @ joint_matrix).T + gain @ joint_covariance @ gain.T
+    np.testing.assert_allclose(tracker.state, expected_state, atol=1e-10)
+    np.testing.assert_allclose(tracker.covariance, expected_covariance, atol=1e-10)
+
+
+def test_noisier_measurement_has_less_influence():
+    def update_with_noise(noise: float) -> float:
+        tracker = ConstantVelocityKalmanTracker(TrackerConfig(acceleration_noise_spectral_density=0))
+        tracker.state = np.array([0.0, 0.0, 0.0, 0.0])
+        tracker.covariance = np.diag([1.0, 1.0, 1.0, 1.0])
+        tracker.timestamp = 0
+        tracker.last_measurement_timestamp = 0
+        return tracker.process_observation(observation(0, 10, 0, covariance=[[noise, 0], [0, noise]]) )[0].estimated_position[0]
+
+    precise = update_with_noise(1)
+    noisy = update_with_noise(100)
+    assert 0 < noisy < precise < 10
 
 
 def test_informative_measurement_reduces_position_uncertainty():

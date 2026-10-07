@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
-from app.schemas.models import SensorOutage, SimulationConfig, TargetState, TurnEvent
+from app.schemas.models import CartesianSensorConfig, SensorOutage, SimulationConfig, TargetState, TurnEvent
 from app.simulation.motion import advance_with_turns
 from app.simulation.scenarios import example_scenarios
 from app.simulation.runner import run
@@ -163,6 +163,31 @@ def test_sensor_metadata_and_covariance_are_configurable():
     assert observation.sensor_id == "roof-sensor"
     assert observation.sensor_position == pytest.approx([12, -4])
     assert observation.measurement_covariance == [[4, 0], [0, 9]]
+
+
+def test_reported_covariance_can_be_overridden_without_changing_generated_measurement_noise():
+    actual = _two_cartesian_sensor_config(
+        random_seed=29,
+        position_sensor=CartesianSensorConfig(
+            sensor_id="position-A", enabled=True, noise_std_x=2, noise_std_y=3,
+            measurement_interval_seconds=1,
+        ),
+        camera_sensor=CartesianSensorConfig(
+            sensor_id="camera-B", enabled=False, noise_std_x=2, noise_std_y=3,
+            measurement_interval_seconds=1,
+        ),
+    )
+    reported = actual.model_copy(update={
+        "position_sensor": actual.position_sensor.model_copy(update={
+            "reported_noise_std_x": .5,
+            "reported_noise_std_y": .75,
+        })
+    })
+    actual_result = run(actual)
+    reported_result = run(reported)
+    assert reported_result.observations[0].measurement_values == pytest.approx(actual_result.observations[0].measurement_values)
+    assert actual_result.observations[0].measurement_covariance == [[4, 0], [0, 9]]
+    assert reported_result.observations[0].measurement_covariance == [[.25, 0], [0, .5625]]
 
 def test_zero_noise_with_bias_produces_configured_offset_without_changing_truth():
     config = SimulationConfig(duration_seconds=1, sensor_interval_seconds=.25, measurement_noise_std_x=0, measurement_noise_std_y=0, measurement_bias_x=3.5, measurement_bias_y=-2)
@@ -330,3 +355,256 @@ def test_radar_configuration_rejects_negative_noise_interval_and_cartesian_bias(
         SimulationConfig(sensor_type="range_bearing", sensor_interval_seconds=0)
     with pytest.raises(ValueError, match="bias"):
         SimulationConfig(sensor_type="range_bearing", measurement_bias_x=1)
+
+
+def _two_cartesian_sensor_config(**updates) -> SimulationConfig:
+    config = SimulationConfig(
+        duration_seconds=2,
+        simulation_timestep_seconds=.1,
+        initial_speed=8,
+        position_sensor=CartesianSensorConfig(
+            sensor_id="position-A",
+            enabled=True,
+            noise_std_x=0,
+            noise_std_y=0,
+            measurement_interval_seconds=.5,
+        ),
+        camera_sensor=CartesianSensorConfig(
+            sensor_id="camera-B",
+            enabled=True,
+            noise_std_x=0,
+            noise_std_y=0,
+            measurement_interval_seconds=.75,
+            sampling_start_offset_seconds=.25,
+        ),
+    )
+    return config.model_copy(update=updates)
+
+
+def test_two_cartesian_sensors_follow_independent_sampling_schedules():
+    result = run(_two_cartesian_sensor_config())
+    by_sensor = {
+        sensor_id: [observation.measurement_timestamp for observation in result.observations if observation.sensor_id == sensor_id]
+        for sensor_id in ("position-A", "camera-B")
+    }
+    assert by_sensor["position-A"] == pytest.approx([0, .5, 1, 1.5, 2])
+    assert by_sensor["camera-B"] == pytest.approx([.25, 1, 1.75])
+    assert [(observation.measurement_timestamp, observation.sensor_id) for observation in result.observations] == [
+        (0, "position-A"),
+        (.25, "camera-B"),
+        (.5, "position-A"),
+        (1, "camera-B"),
+        (1, "position-A"),
+        (1.5, "position-A"),
+        (1.75, "camera-B"),
+        (2, "position-A"),
+    ]
+
+
+def test_two_cartesian_sensors_measure_the_same_world_coordinates():
+    result = run(_two_cartesian_sensor_config())
+    truth_by_time = {round(state.timestamp, 10): state for state in result.truth_history}
+    for observation in result.observations:
+        truth = advance_with_turns(initial_state(result.configuration), observation.measurement_timestamp, result.configuration.turn_events)
+        assert observation.measurement_values == pytest.approx([truth.x, truth.y])
+        assert not hasattr(observation, "target_id")
+
+
+def test_sensor_streams_are_deterministic_and_disabling_camera_preserves_position_samples():
+    both_config = _two_cartesian_sensor_config(random_seed=17)
+    both = run(both_config)
+    repeated = run(both_config)
+    assert both.model_dump() == repeated.model_dump()
+    camera_disabled = both_config.model_copy(update={"camera_sensor": both_config.camera_sensor.model_copy(update={"enabled": False})})
+    position_only = run(camera_disabled)
+    both_position = [observation for observation in both.observations if observation.sensor_id == "position-A"]
+    assert [observation.model_dump() for observation in both_position] == [observation.model_dump() for observation in position_only.observations]
+
+
+def test_bias_and_outage_only_affect_the_configured_sensor():
+    base = _two_cartesian_sensor_config(
+        position_sensor=CartesianSensorConfig(
+            sensor_id="position-A", enabled=True, noise_std_x=0, noise_std_y=0, measurement_interval_seconds=.5
+        ),
+        camera_sensor=CartesianSensorConfig(
+            sensor_id="camera-B", enabled=True, noise_std_x=0, noise_std_y=0, measurement_interval_seconds=.5
+        ),
+    )
+    changed_position = base.model_copy(update={
+        "position_sensor": base.position_sensor.model_copy(update={
+            "bias_x": 3,
+            "bias_y": -2,
+            "outage_windows": [SensorOutage(start_time_seconds=.5, end_time_seconds=1.5)],
+        })
+    })
+    base_result = run(base)
+    changed_result = run(changed_position)
+    base_camera = [observation for observation in base_result.observations if observation.sensor_id == "camera-B"]
+    changed_camera = [observation for observation in changed_result.observations if observation.sensor_id == "camera-B"]
+    assert [observation.model_dump() for observation in base_camera] == [observation.model_dump() for observation in changed_camera]
+    assert [observation.measurement_timestamp for observation in changed_result.observations if observation.sensor_id == "position-A"] == pytest.approx([0, 1.5, 2])
+    changed_position_first = next(observation for observation in changed_result.observations if observation.sensor_id == "position-A")
+    assert changed_position_first.measurement_values == pytest.approx([3, -2])
+
+
+def test_fused_track_processes_each_sensor_observation_once_in_chronological_order():
+    config = _two_cartesian_sensor_config(
+        position_sensor=CartesianSensorConfig(
+            sensor_id="sensor-b", enabled=True, noise_std_x=1, noise_std_y=1, measurement_interval_seconds=.5
+        ),
+        camera_sensor=CartesianSensorConfig(
+            sensor_id="sensor-a", enabled=True, noise_std_x=2, noise_std_y=2, measurement_interval_seconds=.5
+        ),
+    )
+    result = run(config)
+    assert len(result.update_diagnostics) == len(result.observations)
+    assert [(diagnostic.measurement_timestamp, diagnostic.sensor_id) for diagnostic in result.update_diagnostics] == [
+        (observation.measurement_timestamp, observation.sensor_id) for observation in result.observations
+    ]
+    assert result.update_diagnostics[0].initialized is True
+    assert all(diagnostic.updated for diagnostic in result.update_diagnostics[1:])
+
+
+def test_comparison_tracks_reuse_the_same_observations_and_fused_track():
+    result = run(_two_cartesian_sensor_config(random_seed=31))
+    assert set(result.comparison_estimates) == {"sensor_a", "sensor_b", "both"}
+    assert result.estimates == result.comparison_estimates["both"]
+    position_id = result.configuration.position_sensor.sensor_id
+    camera_id = result.configuration.camera_sensor.sensor_id
+    assert len(result.comparison_estimates["sensor_a"]) > 0
+    assert len(result.comparison_estimates["sensor_b"]) > 0
+    assert [observation.sensor_id for observation in result.observations if observation.sensor_id == position_id]
+    assert [observation.sensor_id for observation in result.observations if observation.sensor_id == camera_id]
+
+
+def test_fused_track_is_causal_when_a_future_sensor_observation_changes():
+    config = _two_cartesian_sensor_config(random_seed=9)
+    original = run(config)
+    changed_observations = [observation.model_copy(deep=True) for observation in original.observations]
+    changed_observations[-1].measurement_values[0] += 1000
+    from app.tracking.kalman import TrackerConfig, estimate_at_timestamps
+
+    output_timestamps = [state.timestamp for state in original.truth_history]
+    original_estimates = estimate_at_timestamps(original.observations, output_timestamps, TrackerConfig())
+    changed_estimates = estimate_at_timestamps(changed_observations, output_timestamps, TrackerConfig())
+    for first, second in zip(original_estimates[:-1], changed_estimates[:-1]):
+        assert first.estimated_position == pytest.approx(second.estimated_position)
+
+
+def test_zero_latency_preserves_chronological_tracker_behavior():
+    from app.tracking.kalman import TrackerConfig, estimate_at_timestamps
+
+    config = _two_cartesian_sensor_config(random_seed=12)
+    result = run(config)
+    expected = estimate_at_timestamps(
+        result.observations,
+        [state.timestamp for state in result.truth_history],
+        TrackerConfig(
+            initial_velocity_std_mps=config.tracker_initial_velocity_std_mps,
+            acceleration_noise_spectral_density=config.tracker_acceleration_noise_spectral_density,
+        ),
+    )
+    assert len(result.estimates) == len(expected)
+    for actual, reference in zip(result.estimates, expected):
+        assert actual.timestamp == pytest.approx(reference.timestamp)
+        assert actual.estimated_position == pytest.approx(reference.estimated_position)
+        assert actual.estimated_velocity == pytest.approx(reference.estimated_velocity)
+        np.testing.assert_allclose(actual.state_covariance, reference.state_covariance)
+    assert all(observation.availability_timestamp == observation.measurement_timestamp for observation in result.observations)
+
+
+def test_latency_changes_availability_and_delivery_order_not_measurement_values():
+    base = _two_cartesian_sensor_config(
+        position_sensor=CartesianSensorConfig(
+            sensor_id="position-A", enabled=True, noise_std_x=2, noise_std_y=3, measurement_interval_seconds=.5
+        ),
+        camera_sensor=CartesianSensorConfig(
+            sensor_id="camera-B", enabled=True, noise_std_x=4, noise_std_y=5, measurement_interval_seconds=.75, sampling_start_offset_seconds=.25
+        ),
+        random_seed=18,
+    )
+    delayed = base.model_copy(update={
+        "position_sensor": base.position_sensor.model_copy(update={"delivery_latency_seconds": .8}),
+        "camera_sensor": base.camera_sensor.model_copy(update={"delivery_latency_seconds": 0}),
+    })
+    base_result = run(base)
+    delayed_result = run(delayed)
+    base_values = {
+        (observation.sensor_id, observation.measurement_timestamp): observation.measurement_values
+        for observation in base_result.observations
+    }
+    for observation in delayed_result.observations:
+        assert observation.measurement_values == pytest.approx(base_values[(observation.sensor_id, observation.measurement_timestamp)])
+        latency = .8 if observation.sensor_id == "position-A" else 0
+        assert observation.availability_timestamp == pytest.approx(observation.measurement_timestamp + latency)
+    assert delayed_result.observations == sorted(
+        delayed_result.observations,
+        key=lambda observation: (observation.availability_timestamp, observation.measurement_timestamp, observation.sensor_id),
+    )
+
+
+def test_delayed_update_matches_chronological_replay_using_only_arrived_observations():
+    from app.tracking.kalman import TrackerConfig, estimate_at_timestamps
+
+    config = _two_cartesian_sensor_config(
+        duration_seconds=2,
+        position_sensor=CartesianSensorConfig(
+            sensor_id="position-A", enabled=True, noise_std_x=1, noise_std_y=1, measurement_interval_seconds=.5, delivery_latency_seconds=.5
+        ),
+        camera_sensor=CartesianSensorConfig(sensor_id="camera-B", enabled=False),
+        tracker_history_window_seconds=2,
+    )
+    result = run(config)
+    for estimate in result.estimates:
+        arrived = [
+            observation.model_copy(update={"availability_timestamp": observation.measurement_timestamp})
+            for observation in result.observations
+            if observation.availability_timestamp <= estimate.timestamp + 1e-9
+        ]
+        reference = estimate_at_timestamps(
+            arrived,
+            [estimate.timestamp],
+            TrackerConfig(
+                initial_velocity_std_mps=config.tracker_initial_velocity_std_mps,
+                acceleration_noise_spectral_density=config.tracker_acceleration_noise_spectral_density,
+            ),
+        )
+        assert len(reference) == 1
+        assert estimate.estimated_position == pytest.approx(reference[0].estimated_position)
+        assert estimate.estimated_velocity == pytest.approx(reference[0].estimated_velocity)
+
+
+def test_observations_older_than_history_window_are_explicitly_rejected():
+    config = _two_cartesian_sensor_config(
+        duration_seconds=2,
+        position_sensor=CartesianSensorConfig(
+            sensor_id="position-A", enabled=True, noise_std_x=0, noise_std_y=0, measurement_interval_seconds=1, delivery_latency_seconds=1
+        ),
+        camera_sensor=CartesianSensorConfig(sensor_id="camera-B", enabled=False),
+        tracker_history_window_seconds=.25,
+    )
+    result = run(config)
+    assert result.rejected_observation_count == len(result.replay_rejections) > 0
+    assert all(rejection.reason == "outside_history_window" for rejection in result.replay_rejections)
+
+
+def test_delayed_first_measurement_can_predate_first_received_measurement():
+    from app.schemas.models import SensorObservation
+    from app.tracking.kalman import TrackerConfig
+    from app.tracking.replay import BoundedReplayTracker, ReplayConfig
+
+    def delayed(timestamp: float, availability: float, x: float, sensor_id: str) -> SensorObservation:
+        return SensorObservation(
+            sensor_id=sensor_id,
+            measurement_timestamp=timestamp,
+            availability_timestamp=availability,
+            measurement_type="cartesian_position",
+            measurement_values=[x, 0],
+            measurement_covariance=[[1, 0], [0, 1]],
+        )
+
+    observations = [delayed(1, 1, 10, "sensor-b"), delayed(0, 2, 0, "sensor-a")]
+    estimates, diagnostics, rejections = BoundedReplayTracker(TrackerConfig(), ReplayConfig(2)).run(observations, [0, 1, 2])
+    assert rejections == []
+    assert [estimate.timestamp for estimate in estimates] == pytest.approx([1, 2])
+    assert [diagnostic.sensor_id for diagnostic in diagnostics] == ["sensor-a", "sensor-b"]

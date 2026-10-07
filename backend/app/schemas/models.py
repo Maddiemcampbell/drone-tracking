@@ -34,6 +34,53 @@ class SensorOutage(BaseModel):
             raise ValueError("sensor outage end must be after its start")
         return self
 
+
+class CartesianSensorConfig(BaseModel):
+    """Configuration for a direct world-frame Cartesian position sensor."""
+
+    sensor_id: str = Field(
+        default="position-sensor-1",
+        validation_alias=AliasChoices("sensor_id", "id"),
+        min_length=1,
+        max_length=80,
+    )
+    enabled: bool = True
+    noise_std_x: float = Field(
+        default=5,
+        validation_alias=AliasChoices("noise_std_x", "measurement_noise_std_x", "measurement_sigma_x"),
+        ge=0,
+        le=1000,
+    )
+    noise_std_y: float = Field(
+        default=5,
+        validation_alias=AliasChoices("noise_std_y", "measurement_noise_std_y", "measurement_sigma_y"),
+        ge=0,
+        le=1000,
+    )
+    reported_noise_std_x: float | None = Field(default=None, ge=0, le=1000)
+    reported_noise_std_y: float | None = Field(default=None, ge=0, le=1000)
+    bias_x: float = Field(default=0, ge=-100_000, le=100_000)
+    bias_y: float = Field(default=0, ge=-100_000, le=100_000)
+    measurement_interval_seconds: float = Field(
+        default=0.5,
+        validation_alias=AliasChoices("measurement_interval_seconds", "sensor_interval_seconds"),
+        gt=0,
+        le=30,
+    )
+    sampling_start_offset_seconds: float = Field(
+        default=0,
+        validation_alias=AliasChoices("sampling_start_offset_seconds", "sampling_start_offset"),
+        ge=0,
+    )
+    delivery_latency_seconds: float = Field(
+        default=0,
+        validation_alias=AliasChoices("delivery_latency_seconds", "latency_seconds"),
+        ge=0,
+        le=300,
+    )
+    outage_windows: list[SensorOutage] = Field(default_factory=list)
+
+
 class SimulationConfig(BaseModel):
     duration_seconds: float = Field(default=20, gt=0, le=300)
     simulation_timestep_seconds: float = Field(default=0.1, gt=0, le=1)
@@ -84,8 +131,10 @@ class SimulationConfig(BaseModel):
         le=1000,
     )
     bearing_noise_std_degrees: float = Field(default=2, ge=0, le=360)
+    sensor_latency_seconds: float = Field(default=0, ge=0, le=300)
     tracker_initial_velocity_std_mps: float = Field(default=10, ge=0, le=1000)
     tracker_acceleration_noise_spectral_density: float = Field(default=1, ge=0, le=1000)
+    tracker_history_window_seconds: float = Field(default=5, ge=0, le=300)
     outage_windows: list[SensorOutage] = Field(default_factory=list)
     random_seed: int = Field(default=7, ge=0, le=2**31 - 1)
     initial_x: float = Field(default=0, ge=-100_000, le=100_000)
@@ -93,6 +142,10 @@ class SimulationConfig(BaseModel):
     initial_speed: float = Field(default=10, ge=0, le=1000)
     initial_heading_degrees: float = Field(default=0, ge=0, lt=360)
     turn_events: list[TurnEvent] = Field(default_factory=list)
+    position_sensor: CartesianSensorConfig | None = None
+    camera_sensor: CartesianSensorConfig = Field(
+        default_factory=lambda: CartesianSensorConfig(sensor_id="camera-sensor-1", enabled=False)
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -107,6 +160,24 @@ class SimulationConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_turn_events(self) -> "SimulationConfig":
+        if self.position_sensor is None:
+            self.position_sensor = CartesianSensorConfig(
+                sensor_id=self.sensor_id,
+                enabled=self.sensor_type == "cartesian_position",
+                noise_std_x=self.measurement_noise_std_x,
+                noise_std_y=self.measurement_noise_std_y,
+                bias_x=self.measurement_bias_x,
+                bias_y=self.measurement_bias_y,
+                measurement_interval_seconds=self.sensor_interval_seconds,
+                delivery_latency_seconds=self.sensor_latency_seconds,
+                outage_windows=list(self.outage_windows),
+            )
+        if self.position_sensor.sensor_id == self.camera_sensor.sensor_id:
+            raise ValueError("position and camera sensor IDs must be distinct")
+        if self.position_sensor.sampling_start_offset_seconds > self.duration_seconds:
+            raise ValueError("position sensor sampling start offset must be within the simulation duration")
+        if self.camera_sensor.sampling_start_offset_seconds > self.duration_seconds:
+            raise ValueError("camera sensor sampling start offset must be within the simulation duration")
         events = sorted(self.turn_events, key=lambda event: event.start_time_seconds)
         previous_end = 0.0
         for event in events:
@@ -117,14 +188,15 @@ class SimulationConfig(BaseModel):
             previous_end = event.end_time_seconds
         if self.sensor_type == "range_bearing" and (self.measurement_bias_x != 0 or self.measurement_bias_y != 0):
             raise ValueError("range/bearing sensors do not support Cartesian bias")
-        outages = sorted(self.outage_windows, key=lambda window: window.start_time_seconds)
-        previous_end = 0.0
-        for window in outages:
-            if window.end_time_seconds > self.duration_seconds:
-                raise ValueError("sensor outage windows must finish within the simulation duration")
-            if window.start_time_seconds < previous_end:
-                raise ValueError("sensor outage windows must not overlap")
-            previous_end = window.end_time_seconds
+        for sensor_name, sensor in (("position", self.position_sensor), ("camera", self.camera_sensor)):
+            outages = sorted(sensor.outage_windows, key=lambda window: window.start_time_seconds)
+            previous_end = 0.0
+            for window in outages:
+                if window.end_time_seconds > self.duration_seconds:
+                    raise ValueError(f"{sensor_name} sensor outage windows must finish within the simulation duration")
+                if window.start_time_seconds < previous_end:
+                    raise ValueError(f"{sensor_name} sensor outage windows must not overlap")
+                previous_end = window.end_time_seconds
         return self
 
 class TargetState(BaseModel):
@@ -154,8 +226,28 @@ class TrackEstimate(BaseModel):
     measurement_age_seconds: float | None = None
     measurement_updated: bool = False
 
+
+class TrackUpdateDiagnostic(BaseModel):
+    sensor_id: str
+    measurement_timestamp: float
+    innovation: list[float] = Field(min_length=2, max_length=2)
+    initialized: bool = False
+    updated: bool = False
+
+
+class DelayedObservationRejection(BaseModel):
+    sensor_id: str
+    measurement_timestamp: float
+    availability_timestamp: float
+    reason: str
+
+
 class SimulationResult(BaseModel):
     configuration: SimulationConfig
     truth_history: list[TargetState]
     observations: list[SensorObservation]
     estimates: list[TrackEstimate] = []
+    comparison_estimates: dict[str, list[TrackEstimate]] = Field(default_factory=dict)
+    update_diagnostics: list[TrackUpdateDiagnostic] = Field(default_factory=list)
+    rejected_observation_count: int = 0
+    replay_rejections: list[DelayedObservationRejection] = Field(default_factory=list)
