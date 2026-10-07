@@ -164,6 +164,31 @@ def test_sensor_metadata_and_covariance_are_configurable():
     assert observation.sensor_position == pytest.approx([12, -4])
     assert observation.measurement_covariance == [[4, 0], [0, 9]]
 
+
+def test_reported_covariance_can_be_overridden_without_changing_generated_measurement_noise():
+    actual = _two_cartesian_sensor_config(
+        random_seed=29,
+        position_sensor=CartesianSensorConfig(
+            sensor_id="position-A", enabled=True, noise_std_x=2, noise_std_y=3,
+            measurement_interval_seconds=1,
+        ),
+        camera_sensor=CartesianSensorConfig(
+            sensor_id="camera-B", enabled=False, noise_std_x=2, noise_std_y=3,
+            measurement_interval_seconds=1,
+        ),
+    )
+    reported = actual.model_copy(update={
+        "position_sensor": actual.position_sensor.model_copy(update={
+            "reported_noise_std_x": .5,
+            "reported_noise_std_y": .75,
+        })
+    })
+    actual_result = run(actual)
+    reported_result = run(reported)
+    assert reported_result.observations[0].measurement_values == pytest.approx(actual_result.observations[0].measurement_values)
+    assert actual_result.observations[0].measurement_covariance == [[4, 0], [0, 9]]
+    assert reported_result.observations[0].measurement_covariance == [[.25, 0], [0, .5625]]
+
 def test_zero_noise_with_bias_produces_configured_offset_without_changing_truth():
     config = SimulationConfig(duration_seconds=1, sensor_interval_seconds=.25, measurement_noise_std_x=0, measurement_noise_std_y=0, measurement_bias_x=3.5, measurement_bias_y=-2)
     result = run(config)

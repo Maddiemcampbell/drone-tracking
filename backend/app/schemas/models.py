@@ -57,6 +57,8 @@ class CartesianSensorConfig(BaseModel):
         ge=0,
         le=1000,
     )
+    reported_noise_std_x: float | None = Field(default=None, ge=0, le=1000)
+    reported_noise_std_y: float | None = Field(default=None, ge=0, le=1000)
     bias_x: float = Field(default=0, ge=-100_000, le=100_000)
     bias_y: float = Field(default=0, ge=-100_000, le=100_000)
     measurement_interval_seconds: float = Field(

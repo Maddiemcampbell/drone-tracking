@@ -18,6 +18,8 @@ def observe(
     noise_std_y: float | None = None,
     bias_x: float = 0.0,
     bias_y: float = 0.0,
+    reported_noise_std_x: float | None = None,
+    reported_noise_std_y: float | None = None,
     sensor_id: str = "position-sensor-1",
     sensor_position: tuple[float, float] = (0.0, 0.0),
 ) -> SensorObservation | None:
@@ -32,8 +34,8 @@ def observe(
         noise_std_y = noise_std if noise_std_y is None else noise_std_y
     if noise_std_x is None or noise_std_y is None:
         raise ValueError("both x and y noise standard deviations are required")
-    variance_x = noise_std_x**2
-    variance_y = noise_std_y**2
+    variance_x = (noise_std_x if reported_noise_std_x is None else reported_noise_std_x) ** 2
+    variance_y = (noise_std_y if reported_noise_std_y is None else reported_noise_std_y) ** 2
     values = np.array([state.x + bias_x, state.y + bias_y]) + rng.normal(0, [noise_std_x, noise_std_y], size=2)
     return SensorObservation(
         sensor_id=sensor_id,
@@ -92,6 +94,8 @@ def observe_sensor(
     noise_std_y: float,
     bias_x: float,
     bias_y: float,
+    reported_noise_std_x: float | None,
+    reported_noise_std_y: float | None,
     sensor_heading_degrees: float,
     range_noise_std_meters: float,
     bearing_noise_std_degrees: float,
@@ -113,6 +117,8 @@ def observe_sensor(
         noise_std_y=noise_std_y,
         bias_x=bias_x,
         bias_y=bias_y,
+        reported_noise_std_x=reported_noise_std_x,
+        reported_noise_std_y=reported_noise_std_y,
         sensor_id=sensor_id,
         sensor_position=sensor_position,
     )

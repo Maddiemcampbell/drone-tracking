@@ -26,6 +26,8 @@ class _ScheduledSensor:
     sensor_position: tuple[float, float]
     noise_std_x: float
     noise_std_y: float
+    reported_noise_std_x: float | None
+    reported_noise_std_y: float | None
     bias_x: float
     bias_y: float
     sensor_heading_degrees: float
@@ -72,6 +74,8 @@ def _cartesian_sensor_specs(config: SimulationConfig) -> list[_ScheduledSensor]:
             sensor_position=(config.sensor_position_x, config.sensor_position_y),
             noise_std_x=config.position_sensor.noise_std_x,
             noise_std_y=config.position_sensor.noise_std_y,
+            reported_noise_std_x=config.position_sensor.reported_noise_std_x,
+            reported_noise_std_y=config.position_sensor.reported_noise_std_y,
             bias_x=config.position_sensor.bias_x,
             bias_y=config.position_sensor.bias_y,
             sensor_heading_degrees=0,
@@ -89,6 +93,8 @@ def _cartesian_sensor_specs(config: SimulationConfig) -> list[_ScheduledSensor]:
             sensor_position=(0.0, 0.0),
             noise_std_x=config.camera_sensor.noise_std_x,
             noise_std_y=config.camera_sensor.noise_std_y,
+            reported_noise_std_x=config.camera_sensor.reported_noise_std_x,
+            reported_noise_std_y=config.camera_sensor.reported_noise_std_y,
             bias_x=config.camera_sensor.bias_x,
             bias_y=config.camera_sensor.bias_y,
             sensor_heading_degrees=0,
@@ -111,6 +117,8 @@ def _radar_sensor_spec(config: SimulationConfig) -> _ScheduledSensor:
         sensor_position=(config.sensor_position_x, config.sensor_position_y),
         noise_std_x=0,
         noise_std_y=0,
+        reported_noise_std_x=None,
+        reported_noise_std_y=None,
         bias_x=0,
         bias_y=0,
         sensor_heading_degrees=config.sensor_heading_degrees,
@@ -132,6 +140,8 @@ def _run_sensor_schedule(initial_target_state, config: SimulationConfig, sensor:
             sensor_position=sensor.sensor_position,
             noise_std_x=sensor.noise_std_x,
             noise_std_y=sensor.noise_std_y,
+            reported_noise_std_x=sensor.reported_noise_std_x,
+            reported_noise_std_y=sensor.reported_noise_std_y,
             bias_x=sensor.bias_x,
             bias_y=sensor.bias_y,
             sensor_heading_degrees=sensor.sensor_heading_degrees,
