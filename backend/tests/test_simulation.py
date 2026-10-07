@@ -174,6 +174,12 @@ def test_api():
     assert response.status_code == 200 and "truth_history" in response.json()
 
 
+def test_radar_mode_remains_sensor_only_without_tracker_estimates():
+    result = run(SimulationConfig(sensor_type="range_bearing", duration_seconds=1, range_noise_std_meters=0, bearing_noise_std_degrees=0, sensor_position_y=-1))
+    assert result.observations
+    assert result.estimates == []
+
+
 def test_radar_axis_targets_use_sensor_relative_range_and_bearing():
     rng = np.random.default_rng(1)
     east = observe_range_bearing(TargetState(target_id="drone", timestamp=0, x=10, y=0, vx=0, vy=0), rng, sensor_id="radar", sensor_position=(0, 0), sensor_heading_degrees=0, range_noise_std_meters=0, bearing_noise_std_degrees=0)

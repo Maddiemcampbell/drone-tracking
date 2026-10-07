@@ -69,6 +69,8 @@ class SimulationConfig(BaseModel):
         le=1000,
     )
     bearing_noise_std_degrees: float = Field(default=2, ge=0, le=360)
+    tracker_initial_velocity_std_mps: float = Field(default=10, ge=0, le=1000)
+    tracker_acceleration_noise_spectral_density: float = Field(default=1, ge=0, le=1000)
     random_seed: int = Field(default=7, ge=0, le=2**31 - 1)
     initial_x: float = Field(default=0, ge=-100_000, le=100_000)
     initial_y: float = Field(default=0, ge=-100_000, le=100_000)

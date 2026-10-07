@@ -11,7 +11,7 @@ import './styles.css';
 type Scenario = { label: string; description: string; config: SimulationConfig };
 type LearningPreset = { label: string; description: string };
 
-const baseConfig = { measurement_noise_std_x: 5, measurement_noise_std_y: 5, measurement_bias_x: 0, measurement_bias_y: 0, sensor_type: 'cartesian_position' as const, sensor_heading_degrees: 0, range_noise_std_meters: 5, bearing_noise_std_degrees: 2, sensor_id: 'position-sensor-1', sensor_position_x: 0, sensor_position_y: 0 };
+const baseConfig = { measurement_noise_std_x: 5, measurement_noise_std_y: 5, measurement_bias_x: 0, measurement_bias_y: 0, sensor_type: 'cartesian_position' as const, sensor_heading_degrees: 0, range_noise_std_meters: 5, bearing_noise_std_degrees: 2, tracker_initial_velocity_std_mps: 10, tracker_acceleration_noise_spectral_density: 1, sensor_id: 'position-sensor-1', sensor_position_x: 0, sensor_position_y: 0 };
 const scenarios: Record<string, Scenario> = {
   straight_flight: { label: 'Straight', description: 'Constant speed with no scheduled turns.', config: { ...baseConfig, duration_seconds: 20, simulation_timestep_seconds: .1, sensor_interval_seconds: .5, random_seed: 7, initial_x: 0, initial_y: 0, initial_speed: 10, initial_heading_degrees: 0, turn_events: [] } },
   gradual_90_degree_turn: { label: '90-degree turn', description: 'A gradual left turn that changes heading by 90 degrees.', config: { ...baseConfig, duration_seconds: 20, simulation_timestep_seconds: .1, sensor_interval_seconds: .5, random_seed: 7, initial_x: 0, initial_y: 0, initial_speed: 10, initial_heading_degrees: 0, turn_events: [{ start_time_seconds: 8, duration_seconds: 4, turn_rate_degrees_per_second: 22.5 }] } },
@@ -95,6 +95,7 @@ export default function App() {
         <label>Flight pattern<select value={scenarioId} onChange={chooseScenario}>{Object.entries(scenarios).map(([id, scenario]) => <option key={id} value={id}>{scenario.label}</option>)}</select></label>
         <label>Learning preset<select defaultValue="" onChange={applyLearningPreset}><option value="">Choose an experiment…</option>{Object.entries(learningPresets).map(([id, preset]) => <option key={id} value={id}>{preset.label}</option>)}</select><small className="field-help">Presets change controls; run the simulation to apply one.</small></label>
         <label>Active sensor<select value={config.sensor_type} onChange={(event) => { const sensor_type = event.target.value as SimulationConfig['sensor_type']; setConfig({ ...config, sensor_type, measurement_bias_x: 0, measurement_bias_y: 0 }); }}><option value="cartesian_position">Cartesian position sensor</option><option value="range_bearing">Radar-style range / bearing sensor</option></select></label>
+        <p className="tracker-status">{config.sensor_type === 'range_bearing' ? 'Tracking unavailable in radar mode; observations remain sensor-only.' : 'Tracker milestone: backend prediction output only; this view does not present it as a finished track.'}</p>
         <div className="control-grid">
           <label>Initial speed (m/s)<input type="number" min="0" step="any" value={config.initial_speed} onChange={update('initial_speed')} /></label>
           <label>Initial heading (°)<input type="number" min="0" max="359.9" step="any" value={config.initial_heading_degrees} onChange={update('initial_heading_degrees')} /></label>
