@@ -92,6 +92,25 @@ def test_sensor_schedule_and_zero_noise():
         state = truth_by_time[observation.measurement_timestamp]
         assert observation.measurement_values == pytest.approx([state.x, state.y])
 
+def test_between_tick_measurements_use_exact_truth_timestamp():
+    config = SimulationConfig(duration_seconds=1, simulation_timestep_seconds=.1, sensor_interval_seconds=.25, measurement_noise_std=0, initial_speed=8, initial_heading_degrees=0)
+    result = run(config)
+    assert [observation.measurement_timestamp for observation in result.observations] == pytest.approx([0, .25, .5, .75, 1])
+    for observation in result.observations:
+        assert observation.measurement_values == pytest.approx([8 * observation.measurement_timestamp, 0])
+
+def test_seed_changes_observations_but_not_truth():
+    first = run(SimulationConfig(duration_seconds=2, random_seed=1))
+    second = run(SimulationConfig(duration_seconds=2, random_seed=2))
+    assert first.truth_history == second.truth_history
+    assert [observation.measurement_values for observation in first.observations] != [observation.measurement_values for observation in second.observations]
+
+def test_sensor_interval_changes_timing_but_not_truth():
+    first = run(SimulationConfig(duration_seconds=2, sensor_interval_seconds=.25))
+    second = run(SimulationConfig(duration_seconds=2, sensor_interval_seconds=.75))
+    assert first.truth_history == second.truth_history
+    assert [observation.measurement_timestamp for observation in first.observations] != [observation.measurement_timestamp for observation in second.observations]
+
 def test_invalid_config_is_rejected():
     with pytest.raises(ValueError): SimulationConfig(duration_seconds=0)
 

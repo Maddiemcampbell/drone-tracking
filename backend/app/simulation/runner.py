@@ -8,16 +8,21 @@ from app.tracking.kalman import estimate
 def run(config: SimulationConfig) -> SimulationResult:
     rng = np.random.default_rng(config.random_seed)
     state = initial_state(config)
-    truth, observations = [state], []
-    next_sensor_time = 0.0
+    truth = [state]
+    observations = [observe(state, config.measurement_noise_std, rng)]
+    next_sensor_time = round(config.sensor_interval_seconds, 10)
     while True:
         timestamp = state.timestamp
-        if timestamp + 1e-9 >= next_sensor_time:
-            observations.append(observe(state, config.measurement_noise_std, rng))
-            next_sensor_time = round(next_sensor_time + config.sensor_interval_seconds, 10)
         if timestamp >= config.duration_seconds - 1e-9:
             break
         dt = min(config.simulation_timestep_seconds, config.duration_seconds - timestamp)
+        end_time = timestamp + dt
+        while next_sensor_time <= end_time + 1e-9:
+            if next_sensor_time > timestamp + 1e-9:
+                measurement_state = advance_with_turns(state, next_sensor_time - timestamp, config.turn_events)
+                observations.append(observe(measurement_state, config.measurement_noise_std, rng))
+            next_sensor_time = round(next_sensor_time + config.sensor_interval_seconds, 10)
         state = advance_with_turns(state, dt, config.turn_events)
-        truth.append(state)
+        if state.timestamp > truth[-1].timestamp + 1e-9:
+            truth.append(state)
     return SimulationResult(configuration=config, truth_history=truth, observations=observations, estimates=estimate(observations))

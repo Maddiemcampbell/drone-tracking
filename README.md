@@ -36,6 +36,12 @@ cd frontend && npm run typecheck && npm run build
 
 See [docs/architecture.md](docs/architecture.md) and [docs/concepts.md](docs/concepts.md). Position observations are a simplified measurement model, not raw radar signals.
 
+## Motion experiments
+
+1. Compare Straight and 90-degree turn at the same speed. Keep truth visible and scrub through the turn.
+2. Increase measurement noise while keeping the random seed fixed. Compare the noisy dots without changing the true path.
+3. Increase the sensor measurement interval and inspect the S-turn. The truth remains continuous while observations become less frequent.
+
 ## Next milestones
 
 The simulator supports straight flight and scheduled constant-speed turns, including straight, gradual 90-degree, and S-shaped example scenarios. The observation-only constant-velocity Kalman filter is implemented and visualized as a dashed estimate path. Next: add sensor dropouts, range/bearing measurements, delayed measurements, and sensor fusion.
