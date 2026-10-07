@@ -48,6 +48,7 @@ class SimulationConfig(BaseModel):
         le=100_000,
     )
     sensor_id: str = Field(default="position-sensor-1", min_length=1, max_length=80)
+    sensor_type: Literal["cartesian_position", "range_bearing"] = "cartesian_position"
     sensor_position_x: float = Field(
         default=0,
         validation_alias=AliasChoices("sensor_position_x", "sensor_x"),
@@ -60,6 +61,14 @@ class SimulationConfig(BaseModel):
         ge=-100_000,
         le=100_000,
     )
+    sensor_heading_degrees: float = Field(default=0, ge=-360, le=360)
+    range_noise_std_meters: float = Field(
+        default=5,
+        validation_alias=AliasChoices("range_noise_std_meters", "range_noise_std"),
+        ge=0,
+        le=1000,
+    )
+    bearing_noise_std_degrees: float = Field(default=2, ge=0, le=360)
     random_seed: int = Field(default=7, ge=0, le=2**31 - 1)
     initial_x: float = Field(default=0, ge=-100_000, le=100_000)
     initial_y: float = Field(default=0, ge=-100_000, le=100_000)
@@ -88,6 +97,8 @@ class SimulationConfig(BaseModel):
             if event.start_time_seconds < previous_end:
                 raise ValueError("turn events must not overlap")
             previous_end = event.end_time_seconds
+        if self.sensor_type == "range_bearing" and (self.measurement_bias_x != 0 or self.measurement_bias_y != 0):
+            raise ValueError("range/bearing sensors do not support Cartesian bias")
         return self
 
 class TargetState(BaseModel):
@@ -102,7 +113,7 @@ class SensorObservation(BaseModel):
     sensor_id: str
     measurement_timestamp: float
     availability_timestamp: float
-    measurement_type: Literal["cartesian_position"]
+    measurement_type: Literal["cartesian_position", "range_bearing"]
     measurement_values: list[float] = Field(min_length=2, max_length=2)
     measurement_covariance: list[list[float]]
     sensor_position: list[float] = Field(default_factory=lambda: [0.0, 0.0], min_length=2, max_length=2)

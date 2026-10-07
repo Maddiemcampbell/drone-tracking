@@ -1,4 +1,5 @@
 import { stateAtTime } from './playback';
+import { measurementToWorldCoordinates } from './measurement';
 import type { SensorObservation, SimulationResult } from '../types/models';
 
 export type ObservationEvaluation = { observation: SensorObservation; truthX: number; truthY: number; errorX: number; errorY: number; distance: number };
@@ -9,8 +10,9 @@ export function availableObservationEvaluations(result: SimulationResult, playba
     .filter((observation) => observation.availability_timestamp <= playbackTime + 1e-9)
     .map((observation) => {
       const truth = stateAtTime(result.truth_history, observation.measurement_timestamp);
-      const errorX = observation.measurement_values[0] - truth.x;
-      const errorY = observation.measurement_values[1] - truth.y;
+      const [measurementX, measurementY] = measurementToWorldCoordinates(observation, result.configuration);
+      const errorX = measurementX - truth.x;
+      const errorY = measurementY - truth.y;
       return {observation, truthX:truth.x, truthY:truth.y, errorX, errorY, distance:Math.hypot(errorX,errorY)};
     });
 }

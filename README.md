@@ -36,7 +36,7 @@ cd frontend && npm run typecheck && npm run build
 
 See [docs/architecture.md](docs/architecture.md) and [docs/concepts.md](docs/concepts.md). Position observations are a simplified measurement model, not raw radar signals.
 
-The Cartesian sensor samples at integer multiples of its measurement interval, starting at t=0. Measurement noise controls are standard deviations in meters; the returned covariance stores their squared values. Sensor availability currently equals measurement time.
+The Cartesian sensor samples at integer multiples of its measurement interval, starting at t=0. Measurement noise controls are standard deviations in meters; the returned covariance stores their squared values. Sensor availability currently equals measurement time. The UI can also select a simplified radar-style sensor that reports range in meters and bearing in radians relative to the configured sensor heading. Bearing noise is entered in degrees and converted to radians; the covariance therefore mixes m² and rad².
 
 Constant x/y bias is added to every measurement but is intentionally excluded from covariance. Random noise can average down over repeated samples; a consistent bias does not.
 
@@ -48,4 +48,4 @@ Constant x/y bias is added to every measurement but is intentionally excluded fr
 
 ## Next milestones
 
-The simulator supports straight flight and scheduled constant-speed turns, including straight, gradual 90-degree, and S-shaped example scenarios. The observation-only constant-velocity Kalman filter is implemented and visualized as a dashed estimate path. Next: add sensor dropouts, range/bearing measurements, delayed measurements, and sensor fusion.
+The simulator supports straight flight and scheduled constant-speed turns, including straight, gradual 90-degree, and S-shaped example scenarios, plus Cartesian and simplified radar-style observations. Radar samples at the exact scheduled truth time; undefined-origin and negative-range samples are omitted. Next: add sensor dropouts, delayed measurements, and sensor fusion.

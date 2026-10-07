@@ -1,7 +1,7 @@
 import numpy as np
 from app.schemas.models import SimulationConfig, SimulationResult
 from app.simulation.motion import advance_with_turns
-from app.simulation.sensors import observe
+from app.simulation.sensors import observe_sensor
 from app.simulation.world import initial_state
 from app.tracking.kalman import estimate
 
@@ -9,18 +9,21 @@ def run(config: SimulationConfig) -> SimulationResult:
     rng = np.random.default_rng(config.random_seed)
     state = initial_state(config)
     truth = [state]
-    observations = [
-        observe(
+    first_observation = observe_sensor(
             state,
             rng=rng,
+            sensor_type=config.sensor_type,
+            sensor_id=config.sensor_id,
+            sensor_position=(config.sensor_position_x, config.sensor_position_y),
             noise_std_x=config.measurement_noise_std_x,
             noise_std_y=config.measurement_noise_std_y,
             bias_x=config.measurement_bias_x,
             bias_y=config.measurement_bias_y,
-            sensor_id=config.sensor_id,
-            sensor_position=(config.sensor_position_x, config.sensor_position_y),
+            sensor_heading_degrees=config.sensor_heading_degrees,
+            range_noise_std_meters=config.range_noise_std_meters,
+            bearing_noise_std_degrees=config.bearing_noise_std_degrees,
         )
-    ]
+    observations = [first_observation] if first_observation is not None else []
     sample_index = 1
     while True:
         timestamp = state.timestamp
@@ -34,20 +37,25 @@ def run(config: SimulationConfig) -> SimulationResult:
                 break
             if measurement_time > timestamp + 1e-9:
                 measurement_state = advance_with_turns(state, measurement_time - timestamp, config.turn_events)
-                observations.append(
-                    observe(
+                observation = observe_sensor(
                         measurement_state,
                         rng=rng,
+                        sensor_type=config.sensor_type,
+                        sensor_id=config.sensor_id,
+                        sensor_position=(config.sensor_position_x, config.sensor_position_y),
                         noise_std_x=config.measurement_noise_std_x,
                         noise_std_y=config.measurement_noise_std_y,
                         bias_x=config.measurement_bias_x,
                         bias_y=config.measurement_bias_y,
-                        sensor_id=config.sensor_id,
-                        sensor_position=(config.sensor_position_x, config.sensor_position_y),
+                        sensor_heading_degrees=config.sensor_heading_degrees,
+                        range_noise_std_meters=config.range_noise_std_meters,
+                        bearing_noise_std_degrees=config.bearing_noise_std_degrees,
                     )
-                )
+                if observation is not None:
+                    observations.append(observation)
             sample_index += 1
         state = advance_with_turns(state, dt, config.turn_events)
         if state.timestamp > truth[-1].timestamp + 1e-9:
             truth.append(state)
-    return SimulationResult(configuration=config, truth_history=truth, observations=observations, estimates=estimate(observations))
+    estimates = estimate(observations) if config.sensor_type == "cartesian_position" else []
+    return SimulationResult(configuration=config, truth_history=truth, observations=observations, estimates=estimates)
