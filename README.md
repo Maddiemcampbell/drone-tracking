@@ -1,6 +1,6 @@
 # Sensor Tracking Simulator
 
-An educational, hardware-free simulator for learning radar measurements, state estimation, Kalman filtering, and sensor fusion. The first slice models one constant-velocity target and noisy Cartesian position observations. It does not implement targeting or engagement features.
+An educational, hardware-free simulator for learning motion and sensor measurements. It models one constant-velocity target with scheduled turns and one active sensor: Cartesian position or simplified radar-style range/bearing. It does not implement targeting or engagement features.
 
 ## Prerequisites
 
@@ -40,12 +40,16 @@ The Cartesian sensor samples at integer multiples of its measurement interval, s
 
 Constant x/y bias is added to every measurement but is intentionally excluded from covariance. Random noise can average down over repeated samples; a consistent bias does not.
 
-## Motion experiments
+## Learning experiments
 
-1. Compare Straight and 90-degree turn at the same speed. Keep truth visible and scrub through the turn.
-2. Increase measurement noise while keeping the random seed fixed. Compare the noisy dots without changing the true path.
-3. Increase the sensor measurement interval and inspect the S-turn. The truth remains continuous while observations become less frequent.
+Use the learning preset selector in the UI:
+
+1. **Same motion, slower sensor updates**: compare the same truth path with fewer observation samples.
+2. **Same motion, increased measurement noise**: keep the seed fixed and compare scatter without changing motion.
+3. **Same bearing uncertainty, target farther from the radar-style sensor**: compare the same angular uncertainty at a greater range and observe the larger sideways position error.
+
+The optional noise overlay illustrates configured standard deviations. It is not a guaranteed bound or tracker confidence region. Radar dots are converted to world coordinates for display, while the original range/bearing measurement remains authoritative.
 
 ## Next milestones
 
-The simulator supports straight flight and scheduled constant-speed turns, including straight, gradual 90-degree, and S-shaped example scenarios, plus Cartesian and simplified radar-style observations. Radar samples at the exact scheduled truth time; undefined-origin and negative-range samples are omitted. Next: add sensor dropouts, delayed measurements, and sensor fusion.
+The simulator supports straight flight and scheduled constant-speed turns, including straight, gradual 90-degree, and S-shaped example scenarios, plus Cartesian and simplified radar-style observations. Radar samples at the exact scheduled truth time; undefined-origin and negative-range samples are omitted. Deliberately out of scope for later milestones: Doppler, clutter, missed detections, latency, field-of-view/detection-range rules, tracking, and multi-sensor fusion.
