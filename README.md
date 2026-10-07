@@ -42,6 +42,8 @@ The camera sensor is deliberately not an image simulator: it directly reports no
 
 Cartesian tracking uses one shared constant-velocity state. The fused run processes position and camera observations in timestamp order, predicts only when time advances, and applies each sensor's own covariance as a sequential measurement update. The API also returns comparable `sensor_a`, `sensor_b`, and `both` estimate runs that reuse the same generated observations. This assumes independent measurement errors and credible covariance values; it does not reject outliers or correct constant bias automatically.
 
+Each sensor can add delivery latency. Measurement time remains the time the target was observed; availability time is measurement time plus latency, and values/covariance do not change. Playback and tracking reveal samples only at availability. The tracker uses a bounded educational replay coordinator: when a delayed sample is still within the configured history window, it restores a checkpoint before that measurement time, replays arrived observations chronologically, and updates only the current estimate. Previously emitted output timestamps are not rewritten. Older samples are rejected with a count and reason. Replay is intentionally readable rather than optimized and can repeat Kalman work as late samples arrive.
+
 Constant x/y bias is added to every measurement but is intentionally excluded from covariance. Random noise can average down over repeated samples; a consistent bias does not.
 
 ## Learning experiments
@@ -62,4 +64,4 @@ The tracker evaluation compares the causal estimate with a baseline that holds t
 
 ## Next milestones
 
-The simulator supports straight flight, scheduled constant-speed turns, controlled per-sensor outages, two Cartesian observation streams, asynchronous shared-state fusion, and an interactive Cartesian tracking view. Radar samples at the exact scheduled truth time; undefined-origin and negative-range samples are omitted. Deliberately out of scope for later milestones: nonlinear radar tracking, delayed observations, multi-target data association, Doppler, clutter, missed detections, latency, field-of-view/detection-range rules, and track deletion/lifecycle.
+The simulator supports straight flight, scheduled constant-speed turns, controlled per-sensor outages, two Cartesian observation streams, asynchronous shared-state fusion, bounded delayed-observation replay, and an interactive Cartesian tracking view. Radar samples at the exact scheduled truth time; undefined-origin and negative-range samples are omitted. Deliberately out of scope for later milestones: nonlinear radar tracking, multi-target data association, Doppler, clutter, missed detections, field-of-view/detection-range rules, and track deletion/lifecycle.

@@ -70,6 +70,12 @@ class CartesianSensorConfig(BaseModel):
         validation_alias=AliasChoices("sampling_start_offset_seconds", "sampling_start_offset"),
         ge=0,
     )
+    delivery_latency_seconds: float = Field(
+        default=0,
+        validation_alias=AliasChoices("delivery_latency_seconds", "latency_seconds"),
+        ge=0,
+        le=300,
+    )
     outage_windows: list[SensorOutage] = Field(default_factory=list)
 
 
@@ -123,8 +129,10 @@ class SimulationConfig(BaseModel):
         le=1000,
     )
     bearing_noise_std_degrees: float = Field(default=2, ge=0, le=360)
+    sensor_latency_seconds: float = Field(default=0, ge=0, le=300)
     tracker_initial_velocity_std_mps: float = Field(default=10, ge=0, le=1000)
     tracker_acceleration_noise_spectral_density: float = Field(default=1, ge=0, le=1000)
+    tracker_history_window_seconds: float = Field(default=5, ge=0, le=300)
     outage_windows: list[SensorOutage] = Field(default_factory=list)
     random_seed: int = Field(default=7, ge=0, le=2**31 - 1)
     initial_x: float = Field(default=0, ge=-100_000, le=100_000)
@@ -159,6 +167,7 @@ class SimulationConfig(BaseModel):
                 bias_x=self.measurement_bias_x,
                 bias_y=self.measurement_bias_y,
                 measurement_interval_seconds=self.sensor_interval_seconds,
+                delivery_latency_seconds=self.sensor_latency_seconds,
                 outage_windows=list(self.outage_windows),
             )
         if self.position_sensor.sensor_id == self.camera_sensor.sensor_id:
@@ -224,6 +233,13 @@ class TrackUpdateDiagnostic(BaseModel):
     updated: bool = False
 
 
+class DelayedObservationRejection(BaseModel):
+    sensor_id: str
+    measurement_timestamp: float
+    availability_timestamp: float
+    reason: str
+
+
 class SimulationResult(BaseModel):
     configuration: SimulationConfig
     truth_history: list[TargetState]
@@ -231,3 +247,5 @@ class SimulationResult(BaseModel):
     estimates: list[TrackEstimate] = []
     comparison_estimates: dict[str, list[TrackEstimate]] = Field(default_factory=dict)
     update_diagnostics: list[TrackUpdateDiagnostic] = Field(default_factory=list)
+    rejected_observation_count: int = 0
+    replay_rejections: list[DelayedObservationRejection] = Field(default_factory=list)

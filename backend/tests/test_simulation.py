@@ -464,3 +464,122 @@ def test_fused_track_is_causal_when_a_future_sensor_observation_changes():
     changed_estimates = estimate_at_timestamps(changed_observations, output_timestamps, TrackerConfig())
     for first, second in zip(original_estimates[:-1], changed_estimates[:-1]):
         assert first.estimated_position == pytest.approx(second.estimated_position)
+
+
+def test_zero_latency_preserves_chronological_tracker_behavior():
+    from app.tracking.kalman import TrackerConfig, estimate_at_timestamps
+
+    config = _two_cartesian_sensor_config(random_seed=12)
+    result = run(config)
+    expected = estimate_at_timestamps(
+        result.observations,
+        [state.timestamp for state in result.truth_history],
+        TrackerConfig(
+            initial_velocity_std_mps=config.tracker_initial_velocity_std_mps,
+            acceleration_noise_spectral_density=config.tracker_acceleration_noise_spectral_density,
+        ),
+    )
+    assert len(result.estimates) == len(expected)
+    for actual, reference in zip(result.estimates, expected):
+        assert actual.timestamp == pytest.approx(reference.timestamp)
+        assert actual.estimated_position == pytest.approx(reference.estimated_position)
+        assert actual.estimated_velocity == pytest.approx(reference.estimated_velocity)
+        np.testing.assert_allclose(actual.state_covariance, reference.state_covariance)
+    assert all(observation.availability_timestamp == observation.measurement_timestamp for observation in result.observations)
+
+
+def test_latency_changes_availability_and_delivery_order_not_measurement_values():
+    base = _two_cartesian_sensor_config(
+        position_sensor=CartesianSensorConfig(
+            sensor_id="position-A", enabled=True, noise_std_x=2, noise_std_y=3, measurement_interval_seconds=.5
+        ),
+        camera_sensor=CartesianSensorConfig(
+            sensor_id="camera-B", enabled=True, noise_std_x=4, noise_std_y=5, measurement_interval_seconds=.75, sampling_start_offset_seconds=.25
+        ),
+        random_seed=18,
+    )
+    delayed = base.model_copy(update={
+        "position_sensor": base.position_sensor.model_copy(update={"delivery_latency_seconds": .8}),
+        "camera_sensor": base.camera_sensor.model_copy(update={"delivery_latency_seconds": 0}),
+    })
+    base_result = run(base)
+    delayed_result = run(delayed)
+    base_values = {
+        (observation.sensor_id, observation.measurement_timestamp): observation.measurement_values
+        for observation in base_result.observations
+    }
+    for observation in delayed_result.observations:
+        assert observation.measurement_values == pytest.approx(base_values[(observation.sensor_id, observation.measurement_timestamp)])
+        latency = .8 if observation.sensor_id == "position-A" else 0
+        assert observation.availability_timestamp == pytest.approx(observation.measurement_timestamp + latency)
+    assert delayed_result.observations == sorted(
+        delayed_result.observations,
+        key=lambda observation: (observation.availability_timestamp, observation.measurement_timestamp, observation.sensor_id),
+    )
+
+
+def test_delayed_update_matches_chronological_replay_using_only_arrived_observations():
+    from app.tracking.kalman import TrackerConfig, estimate_at_timestamps
+
+    config = _two_cartesian_sensor_config(
+        duration_seconds=2,
+        position_sensor=CartesianSensorConfig(
+            sensor_id="position-A", enabled=True, noise_std_x=1, noise_std_y=1, measurement_interval_seconds=.5, delivery_latency_seconds=.5
+        ),
+        camera_sensor=CartesianSensorConfig(sensor_id="camera-B", enabled=False),
+        tracker_history_window_seconds=2,
+    )
+    result = run(config)
+    for estimate in result.estimates:
+        arrived = [
+            observation.model_copy(update={"availability_timestamp": observation.measurement_timestamp})
+            for observation in result.observations
+            if observation.availability_timestamp <= estimate.timestamp + 1e-9
+        ]
+        reference = estimate_at_timestamps(
+            arrived,
+            [estimate.timestamp],
+            TrackerConfig(
+                initial_velocity_std_mps=config.tracker_initial_velocity_std_mps,
+                acceleration_noise_spectral_density=config.tracker_acceleration_noise_spectral_density,
+            ),
+        )
+        assert len(reference) == 1
+        assert estimate.estimated_position == pytest.approx(reference[0].estimated_position)
+        assert estimate.estimated_velocity == pytest.approx(reference[0].estimated_velocity)
+
+
+def test_observations_older_than_history_window_are_explicitly_rejected():
+    config = _two_cartesian_sensor_config(
+        duration_seconds=2,
+        position_sensor=CartesianSensorConfig(
+            sensor_id="position-A", enabled=True, noise_std_x=0, noise_std_y=0, measurement_interval_seconds=1, delivery_latency_seconds=1
+        ),
+        camera_sensor=CartesianSensorConfig(sensor_id="camera-B", enabled=False),
+        tracker_history_window_seconds=.25,
+    )
+    result = run(config)
+    assert result.rejected_observation_count == len(result.replay_rejections) > 0
+    assert all(rejection.reason == "outside_history_window" for rejection in result.replay_rejections)
+
+
+def test_delayed_first_measurement_can_predate_first_received_measurement():
+    from app.schemas.models import SensorObservation
+    from app.tracking.kalman import TrackerConfig
+    from app.tracking.replay import BoundedReplayTracker, ReplayConfig
+
+    def delayed(timestamp: float, availability: float, x: float, sensor_id: str) -> SensorObservation:
+        return SensorObservation(
+            sensor_id=sensor_id,
+            measurement_timestamp=timestamp,
+            availability_timestamp=availability,
+            measurement_type="cartesian_position",
+            measurement_values=[x, 0],
+            measurement_covariance=[[1, 0], [0, 1]],
+        )
+
+    observations = [delayed(1, 1, 10, "sensor-b"), delayed(0, 2, 0, "sensor-a")]
+    estimates, diagnostics, rejections = BoundedReplayTracker(TrackerConfig(), ReplayConfig(2)).run(observations, [0, 1, 2])
+    assert rejections == []
+    assert [estimate.timestamp for estimate in estimates] == pytest.approx([1, 2])
+    assert [diagnostic.sensor_id for diagnostic in diagnostics] == ["sensor-a", "sensor-b"]

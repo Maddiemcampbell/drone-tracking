@@ -8,7 +8,8 @@ from app.schemas.models import SensorOutage, SimulationConfig, SimulationResult
 from app.simulation.motion import advance_with_turns
 from app.simulation.sensors import observe_sensor
 from app.simulation.world import initial_state
-from app.tracking.kalman import TrackerConfig, estimate_at_timestamps_with_diagnostics
+from app.tracking.kalman import TrackerConfig
+from app.tracking.replay import BoundedReplayTracker, ReplayConfig
 
 EPSILON = 1e-9
 
@@ -20,6 +21,7 @@ class _ScheduledSensor:
     enabled: bool
     measurement_interval_seconds: float
     sampling_start_offset_seconds: float
+    delivery_latency_seconds: float
     outage_windows: list[SensorOutage]
     sensor_position: tuple[float, float]
     noise_std_x: float
@@ -65,6 +67,7 @@ def _cartesian_sensor_specs(config: SimulationConfig) -> list[_ScheduledSensor]:
             enabled=config.position_sensor.enabled,
             measurement_interval_seconds=config.position_sensor.measurement_interval_seconds,
             sampling_start_offset_seconds=config.position_sensor.sampling_start_offset_seconds,
+            delivery_latency_seconds=config.position_sensor.delivery_latency_seconds,
             outage_windows=config.position_sensor.outage_windows,
             sensor_position=(config.sensor_position_x, config.sensor_position_y),
             noise_std_x=config.position_sensor.noise_std_x,
@@ -81,6 +84,7 @@ def _cartesian_sensor_specs(config: SimulationConfig) -> list[_ScheduledSensor]:
             enabled=config.camera_sensor.enabled,
             measurement_interval_seconds=config.camera_sensor.measurement_interval_seconds,
             sampling_start_offset_seconds=config.camera_sensor.sampling_start_offset_seconds,
+            delivery_latency_seconds=config.camera_sensor.delivery_latency_seconds,
             outage_windows=config.camera_sensor.outage_windows,
             sensor_position=(0.0, 0.0),
             noise_std_x=config.camera_sensor.noise_std_x,
@@ -102,6 +106,7 @@ def _radar_sensor_spec(config: SimulationConfig) -> _ScheduledSensor:
         enabled=True,
         measurement_interval_seconds=config.sensor_interval_seconds,
         sampling_start_offset_seconds=0,
+        delivery_latency_seconds=config.sensor_latency_seconds,
         outage_windows=config.outage_windows,
         sensor_position=(config.sensor_position_x, config.sensor_position_y),
         noise_std_x=0,
@@ -134,7 +139,16 @@ def _run_sensor_schedule(initial_target_state, config: SimulationConfig, sensor:
             bearing_noise_std_degrees=sensor.bearing_noise_std_degrees,
         )
         if observation is not None and not _is_sensor_outage(measurement_time, sensor.outage_windows):
-            observations.append(observation)
+            observations.append(
+                observation.model_copy(
+                    update={
+                        "availability_timestamp": round(
+                            measurement_time + sensor.delivery_latency_seconds,
+                            10,
+                        )
+                    }
+                )
+            )
     return observations
 
 
@@ -173,7 +187,7 @@ def run(config: SimulationConfig) -> SimulationResult:
         for sensor in sensors
         for observation in _run_sensor_schedule(initial_target_state, config, sensor, rngs[sensor.sensor_id])
     ]
-    observations.sort(key=lambda observation: (observation.measurement_timestamp, observation.sensor_id))
+    observations.sort(key=lambda observation: (observation.availability_timestamp, observation.measurement_timestamp, observation.sensor_id))
 
     tracker_config = TrackerConfig(
         initial_velocity_std_mps=config.tracker_initial_velocity_std_mps,
@@ -195,14 +209,15 @@ def run(config: SimulationConfig) -> SimulationResult:
         "sensor_b": sensor_b_observations,
         "both": observations,
     }
+    replay_config = ReplayConfig(config.tracker_history_window_seconds)
+
+    def replay(comparison_observations):
+        return BoundedReplayTracker(tracker_config, replay_config).run(comparison_observations, output_timestamps)
+
     comparison_estimates: dict[str, list] = {}
     for name, comparison_observations in comparison_inputs.items():
-        comparison_estimates[name] = (
-            estimate_at_timestamps_with_diagnostics(comparison_observations, output_timestamps, tracker_config)[0]
-            if comparison_observations
-            else []
-        )
-    estimates, diagnostics = estimate_at_timestamps_with_diagnostics(observations, output_timestamps, tracker_config) if observations else ([], [])
+        comparison_estimates[name] = replay(comparison_observations)[0] if comparison_observations else []
+    estimates, diagnostics, rejections = replay(observations) if observations else ([], [], [])
     return SimulationResult(
         configuration=config,
         truth_history=truth,
@@ -210,4 +225,6 @@ def run(config: SimulationConfig) -> SimulationResult:
         estimates=estimates,
         comparison_estimates=comparison_estimates,
         update_diagnostics=diagnostics,
+        rejected_observation_count=len(rejections),
+        replay_rejections=rejections,
     )
