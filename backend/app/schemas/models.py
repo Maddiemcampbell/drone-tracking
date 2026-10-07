@@ -9,8 +9,8 @@ class SimulationConfig(BaseModel):
     random_seed: int = Field(default=7, ge=0, le=2**31 - 1)
     initial_x: float = Field(default=0, ge=-100_000, le=100_000)
     initial_y: float = Field(default=0, ge=-100_000, le=100_000)
-    initial_vx: float = Field(default=10, ge=-1000, le=1000)
-    initial_vy: float = Field(default=5, ge=-1000, le=1000)
+    initial_speed: float = Field(default=10, ge=0, le=1000)
+    initial_heading_degrees: float = Field(default=0, ge=0, lt=360)
 
 class TargetState(BaseModel):
     target_id: str
