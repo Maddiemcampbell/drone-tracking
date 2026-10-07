@@ -36,6 +36,8 @@ cd frontend && npm run typecheck && npm run build
 
 See [docs/architecture.md](docs/architecture.md) and [docs/concepts.md](docs/concepts.md). Position observations are a simplified measurement model, not raw radar signals.
 
+The Cartesian sensor samples at integer multiples of its measurement interval, starting at t=0. Measurement noise controls are standard deviations in meters; the returned covariance stores their squared values. Sensor availability currently equals measurement time.
+
 ## Motion experiments
 
 1. Compare Straight and 90-degree turn at the same speed. Keep truth visible and scrub through the turn.

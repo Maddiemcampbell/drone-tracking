@@ -23,13 +23,48 @@ class SimulationConfig(BaseModel):
     duration_seconds: float = Field(default=20, gt=0, le=300)
     simulation_timestep_seconds: float = Field(default=0.1, gt=0, le=1)
     sensor_interval_seconds: float = Field(default=0.5, gt=0, le=30)
-    measurement_noise_std: float = Field(default=5, ge=0, le=1000)
+    measurement_noise_std_x: float = Field(
+        default=5,
+        validation_alias=AliasChoices("measurement_noise_std_x", "measurement_sigma_x"),
+        ge=0,
+        le=1000,
+    )
+    measurement_noise_std_y: float = Field(
+        default=5,
+        validation_alias=AliasChoices("measurement_noise_std_y", "measurement_sigma_y"),
+        ge=0,
+        le=1000,
+    )
+    sensor_id: str = Field(default="position-sensor-1", min_length=1, max_length=80)
+    sensor_position_x: float = Field(
+        default=0,
+        validation_alias=AliasChoices("sensor_position_x", "sensor_x"),
+        ge=-100_000,
+        le=100_000,
+    )
+    sensor_position_y: float = Field(
+        default=0,
+        validation_alias=AliasChoices("sensor_position_y", "sensor_y"),
+        ge=-100_000,
+        le=100_000,
+    )
     random_seed: int = Field(default=7, ge=0, le=2**31 - 1)
     initial_x: float = Field(default=0, ge=-100_000, le=100_000)
     initial_y: float = Field(default=0, ge=-100_000, le=100_000)
     initial_speed: float = Field(default=10, ge=0, le=1000)
     initial_heading_degrees: float = Field(default=0, ge=0, lt=360)
     turn_events: list[TurnEvent] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def support_legacy_shared_noise(cls, values: object) -> object:
+        if not isinstance(values, dict) or "measurement_noise_std" not in values:
+            return values
+        values = dict(values)
+        legacy_noise = values.pop("measurement_noise_std")
+        values.setdefault("measurement_noise_std_x", legacy_noise)
+        values.setdefault("measurement_noise_std_y", legacy_noise)
+        return values
 
     @model_validator(mode="after")
     def validate_turn_events(self) -> "SimulationConfig":
@@ -58,6 +93,7 @@ class SensorObservation(BaseModel):
     measurement_type: Literal["cartesian_position"]
     measurement_values: list[float] = Field(min_length=2, max_length=2)
     measurement_covariance: list[list[float]]
+    sensor_position: list[float] = Field(default_factory=lambda: [0.0, 0.0], min_length=2, max_length=2)
 
 class TrackEstimate(BaseModel):
     track_id: str

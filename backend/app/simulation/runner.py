@@ -9,19 +9,40 @@ def run(config: SimulationConfig) -> SimulationResult:
     rng = np.random.default_rng(config.random_seed)
     state = initial_state(config)
     truth = [state]
-    observations = [observe(state, config.measurement_noise_std, rng)]
-    next_sensor_time = round(config.sensor_interval_seconds, 10)
+    observations = [
+        observe(
+            state,
+            rng=rng,
+            noise_std_x=config.measurement_noise_std_x,
+            noise_std_y=config.measurement_noise_std_y,
+            sensor_id=config.sensor_id,
+            sensor_position=(config.sensor_position_x, config.sensor_position_y),
+        )
+    ]
+    sample_index = 1
     while True:
         timestamp = state.timestamp
         if timestamp >= config.duration_seconds - 1e-9:
             break
         dt = min(config.simulation_timestep_seconds, config.duration_seconds - timestamp)
         end_time = timestamp + dt
-        while next_sensor_time <= end_time + 1e-9:
-            if next_sensor_time > timestamp + 1e-9:
-                measurement_state = advance_with_turns(state, next_sensor_time - timestamp, config.turn_events)
-                observations.append(observe(measurement_state, config.measurement_noise_std, rng))
-            next_sensor_time = round(next_sensor_time + config.sensor_interval_seconds, 10)
+        while True:
+            measurement_time = round(sample_index * config.sensor_interval_seconds, 10)
+            if measurement_time > end_time + 1e-9:
+                break
+            if measurement_time > timestamp + 1e-9:
+                measurement_state = advance_with_turns(state, measurement_time - timestamp, config.turn_events)
+                observations.append(
+                    observe(
+                        measurement_state,
+                        rng=rng,
+                        noise_std_x=config.measurement_noise_std_x,
+                        noise_std_y=config.measurement_noise_std_y,
+                        sensor_id=config.sensor_id,
+                        sensor_position=(config.sensor_position_x, config.sensor_position_y),
+                    )
+                )
+            sample_index += 1
         state = advance_with_turns(state, dt, config.turn_events)
         if state.timestamp > truth[-1].timestamp + 1e-9:
             truth.append(state)

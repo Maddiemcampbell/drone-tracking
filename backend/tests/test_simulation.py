@@ -99,6 +99,29 @@ def test_between_tick_measurements_use_exact_truth_timestamp():
     for observation in result.observations:
         assert observation.measurement_values == pytest.approx([8 * observation.measurement_timestamp, 0])
 
+@pytest.mark.parametrize(("interval", "expected_times"), [
+    (.25, [0, .25, .5, .75, 1]),
+    (.3, [0, .3, .6, .9]),
+    (2, [0]),
+])
+def test_sample_schedule_uses_integer_indices(interval, expected_times):
+    result = run(SimulationConfig(duration_seconds=1, sensor_interval_seconds=interval, measurement_noise_std=0))
+    assert [observation.measurement_timestamp for observation in result.observations] == pytest.approx(expected_times)
+
+def test_measurement_during_turn_uses_exact_motion_time():
+    config = SimulationConfig(duration_seconds=1, simulation_timestep_seconds=.1, sensor_interval_seconds=.25, measurement_noise_std_x=0, measurement_noise_std_y=0, initial_speed=10, turn_events=[TurnEvent(start_time_seconds=.2, duration_seconds=.4, turn_rate_degrees_per_second=90)])
+    result = run(config)
+    expected = advance_with_turns(initial_state(config), .25, config.turn_events)
+    assert result.observations[1].measurement_timestamp == pytest.approx(.25)
+    assert result.observations[1].measurement_values == pytest.approx([expected.x, expected.y])
+
+def test_sensor_metadata_and_covariance_are_configurable():
+    result = run(SimulationConfig(duration_seconds=1, measurement_noise_std_x=2, measurement_noise_std_y=3, sensor_id="roof-sensor", sensor_position_x=12, sensor_position_y=-4))
+    observation = result.observations[0]
+    assert observation.sensor_id == "roof-sensor"
+    assert observation.sensor_position == pytest.approx([12, -4])
+    assert observation.measurement_covariance == [[4, 0], [0, 9]]
+
 def test_seed_changes_observations_but_not_truth():
     first = run(SimulationConfig(duration_seconds=2, random_seed=1))
     second = run(SimulationConfig(duration_seconds=2, random_seed=2))
@@ -113,6 +136,9 @@ def test_sensor_interval_changes_timing_but_not_truth():
 
 def test_invalid_config_is_rejected():
     with pytest.raises(ValueError): SimulationConfig(duration_seconds=0)
+    with pytest.raises(ValueError): SimulationConfig(sensor_interval_seconds=0)
+    with pytest.raises(ValueError): SimulationConfig(measurement_noise_std_x=-1)
+    with pytest.raises(ValueError): SimulationConfig(measurement_noise_std_y=-1)
 
 def test_api():
     client = TestClient(app)
