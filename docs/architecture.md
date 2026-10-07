@@ -7,9 +7,10 @@ SimulationConfig -> World/Motion -> truth history
                               -> Sensor model -> observations
 truth + observations -> API SimulationResult -> Canvas playback
 observations -> ConstantVelocityKalmanFilter -> estimates
+truth + observations + estimates -> evaluation-only metrics
 ```
 
-The tracker consumes `SensorObservation` only. It must never receive truth, true initial velocity, or motion-event configuration. Truth is retained solely for visualization and evaluation. The tracker initializes from the first Cartesian observation, merges measurement and output events chronologically, predicts to each event time, and applies causal Cartesian measurement updates. The frontend does not present the backend estimates as a finished tracking UI yet.
+The tracker consumes `SensorObservation` only. It must never receive truth, true initial velocity, or motion-event configuration. Truth is retained solely for visualization and evaluation. The tracker initializes from the first Cartesian observation, merges measurement and output events chronologically, predicts to each event time, and applies causal Cartesian measurement updates. The frontend renders only estimates emitted by that causal schedule at or before the playback time; it never interpolates toward a future estimate.
 
 `config.py` owns validation; `world.py` creates initial truth; `motion.py` propagates straight and analytic constant-turn-rate segments; `scenarios.py` provides editable examples; `sensors.py` creates noisy measurements; `runner.py` orchestrates; schemas define the typed contract; API routes validate and run batches. The frontend owns playback and converts meters to Canvas pixels. The sensor dispatcher selects the Cartesian position model or the simplified range/bearing model without adding a second scheduler.
 
@@ -29,3 +30,7 @@ Q(dt) = q * [[dt³/3, 0,      dt²/2, 0],
 ```
 
 Measurement updates use `z = [measured_x, measured_y]`, `H` selecting x/y, each observation’s Cartesian covariance as `R`, a linear solve for the innovation system, and the Joseph covariance form `(I-KH)P(I-KH)ᵀ + KRKᵀ`. Covariance is symmetrized after prediction and update. If an exact zero-noise case makes the innovation covariance singular, a least-squares solve is used only when the system is consistent; inconsistent singular measurements are rejected rather than silently regularized. Delayed observations where availability differs from measurement time are rejected. During an outage, prediction continues at output timestamps, measurement age grows, and the next available reading can correct the state. The model assumes approximately constant velocity; it cannot know about an unseen turn, and process noise represents uncertainty in that motion model.
+
+The interactive Cartesian tracking layer draws truth, observations, estimates, estimated velocity, and the latest estimate's position uncertainty separately. It extracts the 2×2 position block from the 4×4 state covariance, diagonalizes the symmetric block, and scales the eigenvalues by the 2D 95% chi-square factor 5.991. Tiny negative eigenvalues attributable to floating-point roundoff are clamped to zero; materially invalid covariance is reported in the view. Zero and nearly-zero eigenvalues are valid degenerate ellipses. The ellipse is a model-based uncertainty illustration, not a guaranteed boundary.
+
+Evaluation is a separate frontend path: at each reached output timestamp it compares the estimate with truth and with a baseline that holds the latest available measured position. It can exclude an initialization warm-up and reports the chosen period and timestamp count. Truth is never passed into the tracker, and metrics do not inspect future observations during playback. Radar remains sensor-only because the tracker measurement model currently accepts Cartesian x/y only.
