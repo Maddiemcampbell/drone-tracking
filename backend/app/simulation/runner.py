@@ -15,6 +15,8 @@ def run(config: SimulationConfig) -> SimulationResult:
             rng=rng,
             noise_std_x=config.measurement_noise_std_x,
             noise_std_y=config.measurement_noise_std_y,
+            bias_x=config.measurement_bias_x,
+            bias_y=config.measurement_bias_y,
             sensor_id=config.sensor_id,
             sensor_position=(config.sensor_position_x, config.sensor_position_y),
         )
@@ -38,6 +40,8 @@ def run(config: SimulationConfig) -> SimulationResult:
                         rng=rng,
                         noise_std_x=config.measurement_noise_std_x,
                         noise_std_y=config.measurement_noise_std_y,
+                        bias_x=config.measurement_bias_x,
+                        bias_y=config.measurement_bias_y,
                         sensor_id=config.sensor_id,
                         sensor_position=(config.sensor_position_x, config.sensor_position_y),
                     )

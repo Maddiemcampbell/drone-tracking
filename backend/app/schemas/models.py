@@ -35,6 +35,18 @@ class SimulationConfig(BaseModel):
         ge=0,
         le=1000,
     )
+    measurement_bias_x: float = Field(
+        default=0,
+        validation_alias=AliasChoices("measurement_bias_x", "bias_x"),
+        ge=-100_000,
+        le=100_000,
+    )
+    measurement_bias_y: float = Field(
+        default=0,
+        validation_alias=AliasChoices("measurement_bias_y", "bias_y"),
+        ge=-100_000,
+        le=100_000,
+    )
     sensor_id: str = Field(default="position-sensor-1", min_length=1, max_length=80)
     sensor_position_x: float = Field(
         default=0,

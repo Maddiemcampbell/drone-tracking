@@ -122,6 +122,31 @@ def test_sensor_metadata_and_covariance_are_configurable():
     assert observation.sensor_position == pytest.approx([12, -4])
     assert observation.measurement_covariance == [[4, 0], [0, 9]]
 
+def test_zero_noise_with_bias_produces_configured_offset_without_changing_truth():
+    config = SimulationConfig(duration_seconds=1, sensor_interval_seconds=.25, measurement_noise_std_x=0, measurement_noise_std_y=0, measurement_bias_x=3.5, measurement_bias_y=-2)
+    result = run(config)
+    for observation in result.observations:
+        truth_x = 10 * observation.measurement_timestamp
+        truth_y = 0
+        assert observation.measurement_values == pytest.approx([truth_x + 3.5, truth_y - 2])
+        assert observation.measurement_covariance == [[0, 0], [0, 0]]
+    assert result.truth_history[-1].x == pytest.approx(10)
+    assert result.truth_history[-1].y == pytest.approx(0)
+
+def test_zero_noise_zero_bias_has_zero_position_error():
+    config = SimulationConfig(duration_seconds=1, sensor_interval_seconds=.25, measurement_noise_std_x=0, measurement_noise_std_y=0, measurement_bias_x=0, measurement_bias_y=0)
+    result = run(config)
+    for observation in result.observations:
+        assert observation.measurement_values == pytest.approx([10 * observation.measurement_timestamp, 0])
+
+def test_bias_does_not_change_motion_or_random_noise_covariance():
+    unbiased = run(SimulationConfig(duration_seconds=1, random_seed=4, measurement_noise_std_x=2, measurement_noise_std_y=3))
+    biased = run(SimulationConfig(duration_seconds=1, random_seed=4, measurement_noise_std_x=2, measurement_noise_std_y=3, measurement_bias_x=7, measurement_bias_y=-4))
+    assert unbiased.truth_history == biased.truth_history
+    for first, second in zip(unbiased.observations, biased.observations):
+        assert second.measurement_values == pytest.approx([first.measurement_values[0] + 7, first.measurement_values[1] - 4])
+        assert second.measurement_covariance == first.measurement_covariance
+
 def test_seed_changes_observations_but_not_truth():
     first = run(SimulationConfig(duration_seconds=2, random_seed=1))
     second = run(SimulationConfig(duration_seconds=2, random_seed=2))

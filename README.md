@@ -38,6 +38,8 @@ See [docs/architecture.md](docs/architecture.md) and [docs/concepts.md](docs/con
 
 The Cartesian sensor samples at integer multiples of its measurement interval, starting at t=0. Measurement noise controls are standard deviations in meters; the returned covariance stores their squared values. Sensor availability currently equals measurement time.
 
+Constant x/y bias is added to every measurement but is intentionally excluded from covariance. Random noise can average down over repeated samples; a consistent bias does not.
+
 ## Motion experiments
 
 1. Compare Straight and 90-degree turn at the same speed. Keep truth visible and scrub through the turn.
