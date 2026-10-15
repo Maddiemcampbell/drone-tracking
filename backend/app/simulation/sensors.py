@@ -2,12 +2,8 @@ import math
 from typing import Literal
 
 import numpy as np
+from app.geometry import normalize_angle_radians
 from app.schemas.models import SensorObservation, TargetState
-
-
-def normalize_angle_radians(angle: float) -> float:
-    """Normalize an angle to [-pi, pi)."""
-    return (angle + math.pi) % (2 * math.pi) - math.pi
 
 def observe(
     state: TargetState,
